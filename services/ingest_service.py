@@ -44,6 +44,10 @@ SUPPORTED = {
 # 走 VLM 路徑的圖片格式
 IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tiff"}
 
+# 使用者還沒指定知識庫資料夾時，上傳會自動建立並記住這一個。
+# 放在專案底下而不是使用者家目錄，是為了讓「整包複製給別人」仍然帶得走。
+DEFAULT_KB_DIR = Path(__file__).resolve().parent.parent / "sample_knowledge_base"
+
 # Office 檔內嵌圖片的最小尺寸。低於此值多半是圖示、項目符號、logo，
 # 送去 VLM 只會得到「一個藍色小圖示」這種對檢索毫無幫助的描述。
 MIN_EMBEDDED_IMAGE_BYTES = 20_000
@@ -841,12 +845,28 @@ def save_uploads(root_path: str, files, stage_code: str | None = None) -> tuple[
     return saved, errors
 
 
+# 掃描時一律略過的資料夾。
+#
+# **這是必要的防護，不是潔癖。** 使用者很可能把知識庫指到專案根目錄，
+# 或不小心把文件放在專案裡——那樣 `venv/` 底下數萬個 `.txt`／`.json`
+# 就會被當成知識文件吃進索引（實測掃出 272 個 `top_level.txt`、
+# `entry_points.txt`、`LICENSE.txt` 這類套件中繼資料）。
+# 這些檔案的副檔名確實在支援清單裡，光靠副檔名擋不掉。
+SKIP_DIRS = {
+    "venv", ".venv", "env", "node_modules", "__pycache__", ".git", ".idea",
+    ".vscode", "site-packages", "dist", "build", ".pytest_cache", ".mypy_cache",
+    "models",
+}
+
+
 def scan_folder(root: Path) -> list[Path]:
     files = []
     for path in root.rglob("*"):
         if not path.is_file():
             continue
-        if path.name.startswith("~$"):
+        if path.name.startswith("~$") or path.name.startswith("."):
+            continue
+        if SKIP_DIRS & set(path.parts):
             continue
         if path.suffix.lower() in SUPPORTED or path.suffix.lower() in IMAGE_TYPES:
             files.append(path)
@@ -1247,6 +1267,14 @@ def ingest(root_path: str, full_rebuild: bool = False, progress=None) -> IngestS
         stats.messages.append(message)
         if progress:
             progress(message)
+
+    # **空字串一定要先擋掉。** `Path("")` 在 Windows 等同當前目錄，
+    # `.exists()` 與 `.is_dir()` 都回 True，所以下面那道檢查完全擋不住——
+    # 實測結果是把整個專案資料夾（含 venv 的 3 萬個檔案）當成知識庫掃進去，
+    # 索引出 272 個 `top_level.txt`、`entry_points.txt` 這類套件中繼資料。
+    if not root_path.strip():
+        report("尚未設定知識庫資料夾。請先在上方指定要索引的資料夾路徑。")
+        return stats
 
     root = Path(root_path)
     if not root.exists() or not root.is_dir():

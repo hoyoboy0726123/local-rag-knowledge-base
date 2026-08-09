@@ -572,11 +572,21 @@ function Indexing() {
         <div className="phead">
           <b>建立索引</b>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn" onClick={() => run(false)} disabled={busy}>增量更新</button>
-            <button className="btn" onClick={() => run(true)} disabled={busy}>全量重建</button>
+            {/* 沒設定知識庫資料夾時一定要擋住。
+                後端已經會拒絕，但按鈕若還能按，使用者只會看到一則錯誤訊息，
+                不知道該去哪裡設定——按鈕直接停用並說明才是對的。 */}
+            <button className="btn" onClick={() => run(false)} disabled={busy || !info.root}>增量更新</button>
+            <button className="btn" onClick={() => run(true)} disabled={busy || !info.root}>全量重建</button>
           </div>
         </div>
         <div style={{ padding: 15 }}>
+          {!info.root && (
+            <div className="note amber" style={{ marginBottom: 10 }}>
+              <b>尚未設定知識庫資料夾。</b>
+              請先在上方「知識庫資料夾」欄位填入要索引的資料夾路徑並儲存，
+              或直接上傳文件（系統會自動建立預設資料夾）。設定之前無法建立索引。
+            </div>
+          )}
           <div style={{ fontSize: 12.5, color: 'var(--ink-2)', marginBottom: 10 }}>
             {info.stats.documents} 份文件 · {info.stats.chunks} 個切片 · 最後索引 {info.stats.last_indexed}
           </div>

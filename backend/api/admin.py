@@ -222,7 +222,18 @@ def run_index(full: bool = False, _: dict = Depends(require_admin)) -> Streaming
 async def upload(stage_code: str | None = None, force_vlm: bool = False,
                  files: list[UploadFile] = File(...),
                  _: dict = Depends(require_admin)) -> dict:
+    # 還沒設定知識庫資料夾時，**自動建立預設資料夾並記住它**。
+    #
+    # 「上傳一份文件」是新使用者最自然的第一個動作，不該因為少設一個路徑就失敗。
+    # 先前會回「知識庫資料夾不存在：（未設定）」，使用者看不出要去哪裡設定，
+    # 接著按下「全量重建」——而空路徑在 Windows 等同當前目錄，
+    # 於是整個專案（含 venv）被當成知識庫掃進索引。
     root = get_setting("knowledge_root", "")
+    if not root.strip():
+        root = str(ingest_service.DEFAULT_KB_DIR)
+        ingest_service.DEFAULT_KB_DIR.mkdir(parents=True, exist_ok=True)
+        set_setting("knowledge_root", root)
+
     saved, errors = ingest_service.save_uploads(root, files, stage_code)
     # 「要不要用視覺模型解析」在上傳當下就該決定，所以選項在這裡一併寫入。
     # 存的是絕對路徑，跟索引流程查的鍵一致。
