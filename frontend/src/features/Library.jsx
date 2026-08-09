@@ -666,6 +666,18 @@ function Errors() {
           </div>
         </div>
       )}
+      {/* 部分解析要跟徹底失敗分開。這些文件**已經在索引裡查得到**，
+          擺在「解析失敗」底下會讓人以為要重傳，實際上該判斷的是缺的那部分重不重要。 */}
+      {(data.partial || []).length > 0 && (
+        <div className="panel">
+          <div className="phead"><b>◐ 部分內容未解析</b><span className="pill">{data.partial.length}</span></div>
+          {table(data.partial)}
+          <div style={{ padding: 12, fontSize: 11.5, color: 'var(--ink-3)' }}>
+            <b>這些文件已經納入索引、可以被查到</b>，只是有部分圖片沒讀成功（多半是視覺模型逾時）。
+            若缺的內容重要，重跑一次索引通常就會成功。
+          </div>
+        </div>
+      )}
       <div className="panel">
         <div className="phead"><b>⚠️ 解析失敗</b><span className="pill">{data.failures.length}</span></div>
         {data.failures.length ? table(data.failures)

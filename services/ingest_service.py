@@ -52,11 +52,52 @@ DEFAULT_KB_DIR = Path(__file__).resolve().parent.parent / "sample_knowledge_base
 # 送去 VLM 只會得到「一個藍色小圖示」這種對檢索毫無幫助的描述。
 MIN_EMBEDDED_IMAGE_BYTES = 20_000
 
+# 視覺解析的提示詞。**任務是「轉錄」不是「描述」**——這個差別是實測踩出來的。
+#
+# 舊版寫的是「請詳細描述圖中的所有資訊……以文字逐列敘述其內容」。
+# 對一般圖片沒問題，但碰到 28 列的分類表時，模型會給出這種東西：
+#
+#     大類從 01 到 22，每個大類後面跟著其描述。例如：01 CPU, 02 CHIPSET,
+#     03 MEMORY 等等。
+#
+# 這在「描述」的框架下完全合理——摘要本來就是描述的一種。問題是
+# **「等等」後面的項目從此不存在於知識庫**，之後再強的檢索也救不回來。
+# 同一份 PDF、同一個模型、temperature 0.1，在兩台機器上一台逐列轉錄、
+# 一台摘要成「等等」，可見不是模型不行，是任務給錯了。
 VLM_PROMPT = (
-    "這是一份文件中的圖片。請詳細描述圖中的所有資訊，"
-    "包含文字內容、表格結構與數值、流程圖的節點與流向。"
-    "若圖中有表格，請以文字逐列敘述其內容。直接輸出描述，不要加開場白。"
+    "把這張圖片裡的所有文字**逐字轉錄**出來。這是資料保存，不是內容摘要。\n"
+    "1. 表格一律輸出成完整的 Markdown 表格，**每一列都要寫**，不可以只寫前幾列。\n"
+    "2. **禁止**使用「等」「等等」「以此類推」「例如…等」「其餘省略」這類省略寫法。"
+    "寧可輸出很長，也不可以少寫任何一列。\n"
+    "3. 流程圖與示意圖：寫出每個節點的文字，以及節點之間的連接方向。\n"
+    "4. 圖片若沒有文字（純照片、裝飾圖），簡短說明它畫的是什麼即可。\n"
+    "直接輸出結果，不要開場白。"
 )
+
+# 偵測到省略後的重試提示詞。把上一次的失敗明講出來，模型改正的機率高很多。
+VLM_PROMPT_RETRY = (
+    "你剛才描述這張圖片時，用了「等」「等等」之類的省略寫法，導致資料遺失。\n\n"
+    + VLM_PROMPT
+    + "\n\n再做一次。特別注意：**表格的每一列都必須完整寫出來，一列都不能少。**"
+)
+
+# 判定 VLM「摘要掉了」的字樣。
+#
+# 只抓明確的省略語，不抓單獨的「等」——「無表格等內容」「等待」都含「等」，
+# 全抓會讓每一頁都重試一次，時間直接翻倍。因此「如…等」這一類要求
+# 前後文成立（列舉起手式 + 80 字內收尾在「等」+ 標點）才算數。
+_ELISION = re.compile(
+    r"等等|以此類推|依此類推|不一一列[出舉]|以下省略"
+    r"|其餘(?:項目|內容|資料|部分)?(?:省略|從略|略)"
+    r"|etc\.|and so on"
+    r"|[如例][：:][^。\n]{0,80}?等[。，、\n]"
+    r"|如[^。\n]{0,80}?等[。，、\n]"
+)
+
+
+def _looks_elided(text: str) -> bool:
+    """這段 VLM 輸出是不是把內容摘要掉了。"""
+    return bool(_ELISION.search(text))
 
 
 # 建議安裝的視覺模型。名稱的兩個細節都是實測過才確定的：
@@ -249,8 +290,38 @@ def _render_crumb(stack: list[tuple[int, str]]) -> str:
     return crumb if len(crumb) <= CRUMB_MAX_CHARS else crumb[-CRUMB_MAX_CHARS:]
 
 
+def _split_by_lines(text: str, limit: int, overlap: int) -> list[str]:
+    """沒有句尾可切時退到行尾。
+
+    表格、清單、程式碼都是以行為單位的內容，而且**經常整段沒有一個句號**，
+    所以會直接掉到最後的硬切。實測的後果：一張 16 列的廠商表被切成
+    `| 01012 | ROCKC` 與 `HIP (CPU/SOC) |`，模型讀到前半段之後，
+    就把「ROCKC」當成一個真的廠商名稱列進答案裡——它沒有錯，
+    它看到的就是那樣。切在行尾就不會有這個問題。
+    """
+    out: list[str] = []
+    buffer = ""
+    for line in text.splitlines(keepends=True):
+        # 單獨一行就超過上限（超長表格列、整段沒換行的長句），只能硬切這一行
+        if len(line) > limit:
+            if buffer:
+                out.append(buffer)
+                buffer = ""
+            step = max(limit - overlap, 1)
+            for i in range(0, len(line), step):
+                out.append(line[i : i + limit])
+            continue
+        if len(buffer) + len(line) > limit:
+            out.append(buffer)
+            buffer = ""
+        buffer += line
+    if buffer:
+        out.append(buffer)
+    return out
+
+
 def _split_oversize(block: str, limit: int, overlap: int) -> list[str]:
-    """單一區塊超過上限時，依序退讓：句尾 → 硬切。"""
+    """單一區塊超過上限時，依序退讓：句尾 → 行尾 → 硬切。"""
     if len(block) <= limit:
         return [block]
 
@@ -259,14 +330,12 @@ def _split_oversize(block: str, limit: int, overlap: int) -> list[str]:
     for sentence in _SENTENCE_END.split(block):
         if not sentence:
             continue
-        # 連一個句子都超過上限，只好硬切它
+        # 連一個句子都超過上限，退到行尾再切
         if len(sentence) > limit:
             if buffer:
                 pieces.append(buffer)
                 buffer = ""
-            step = max(limit - overlap, 1)
-            for i in range(0, len(sentence), step):
-                pieces.append(sentence[i : i + limit])
+            pieces.extend(_split_by_lines(sentence, limit, overlap))
             continue
         if len(buffer) + len(sentence) > limit:
             pieces.append(buffer)
@@ -404,9 +473,14 @@ def chunk_text(text: str, size: int, overlap: int, base_locator: str = "") -> li
 # 真正的掃描件是 0 字/頁。取 30 留很大的餘裕，避免誤判正常的稀疏文件。
 SCANNED_CHARS_PER_PAGE = 30
 
-# 每頁 VLM 約需 9 秒，整份長掃描件跑下去會讓索引卡住數十分鐘。
-# 超過的部分明確標注在內容裡，不要讓使用者以為全部都讀進去了。
-MAX_VLM_PAGES = 10
+# 每頁 VLM 約需 9 秒。上限訂在 40 頁（最壞約 6 分鐘，含重試約 12 分鐘）。
+#
+# 原本是 10。實際踩到的狀況是一份 16 頁的教育訓練教材被砍掉後 6 頁，
+# 而**唯一的提示只寫在解析後的內容裡**——使用者要點進「原始文件」才看得到，
+# 等於靜靜地少收了三分之一的內容。10 頁對簡報型文件太小，投影片動輒數十頁。
+#
+# 超過上限時除了標注在內容裡，也會經由 progress 打進上傳日誌。
+MAX_VLM_PAGES = 40
 
 # 送進 VLM 前的算圖倍率。2 倍對掃描的中文字已足夠辨識，再高只是變慢。
 PDF_RENDER_SCALE = 2
@@ -425,6 +499,32 @@ def _looks_scanned(path: Path, content: str) -> bool:
     except Exception:  # noqa: BLE001
         return False
     return bool(pages) and len(content) / pages < SCANNED_CHARS_PER_PAGE
+
+
+def _describe_once(data: bytes) -> tuple[str, str, bool]:
+    """描述一張圖，發現被摘要就用更嚴格的提示詞重試一次。
+
+    回傳 `(內容, 錯誤, 仍然省略)`。第三個值是給呼叫端示警用的——
+    **重試不保證成功，所以必須讓使用者知道哪幾頁可能不完整**，
+    而不是重試完就當作沒事。
+
+    只重試一次：實測第二次改不掉的，第三次也改不掉，多跑只是浪費時間。
+    """
+    text, error = ollama_client.describe_image(data, VLM_PROMPT)
+    if error:
+        return "", error, False
+    text = text.strip()
+    if not _looks_elided(text):
+        return text, "", False
+
+    retry, retry_error = ollama_client.describe_image(data, VLM_PROMPT_RETRY)
+    retry = retry.strip()
+    if retry_error or not retry:
+        return text, "", True
+    # 重試同樣省略而且沒有更長，代表沒改善——留原本的，別拿更差的換掉
+    if _looks_elided(retry) and len(retry) <= len(text):
+        return text, "", True
+    return retry, "", _looks_elided(retry)
 
 
 def _vlm_read_pdf(path: Path, progress=None) -> tuple[str, str]:
@@ -446,6 +546,7 @@ def _vlm_read_pdf(path: Path, progress=None) -> tuple[str, str]:
     total = len(pdf)
     blocks: list[str] = []
     errors: list[str] = []
+    elided: list[int] = []
     try:
         pages_to_do = min(total, MAX_VLM_PAGES)
         for index in range(pages_to_do):
@@ -454,12 +555,16 @@ def _vlm_read_pdf(path: Path, progress=None) -> tuple[str, str]:
             image = pdf[index].render(scale=PDF_RENDER_SCALE).to_pil()
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
-            description, error = ollama_client.describe_image(buffer.getvalue(), VLM_PROMPT)
+            description, error, still_short = _describe_once(buffer.getvalue())
             if error:
                 errors.append(f"第 {index + 1} 頁：{error}")
                 continue
-            if description.strip():
-                blocks.append(f"## 第 {index + 1} 頁\n\n{description.strip()}")
+            if still_short:
+                elided.append(index + 1)
+                if progress:
+                    progress(f"      ⚠ 第 {index + 1} 頁重試後仍有省略，內容可能不完整")
+            if description:
+                blocks.append(f"## 第 {index + 1} 頁\n\n{description}")
     finally:
         pdf.close()
 
@@ -467,8 +572,18 @@ def _vlm_read_pdf(path: Path, progress=None) -> tuple[str, str]:
         return "", "；".join(errors) or "VLM 未產生任何內容"
 
     header = f"（本檔案無文字層，以下內容由 VLM 從掃描影像判讀，共 {total} 頁）"
+    # 這兩個警告以前只寫進內容裡，使用者要點開「原始文件」才看得到。
+    # 一併打進 progress，讓它出現在上傳當下的日誌。
     if total > MAX_VLM_PAGES:
-        header += f"\n\n**注意：只解析了前 {MAX_VLM_PAGES} 頁，其餘 {total - MAX_VLM_PAGES} 頁未納入索引。**"
+        note = f"只解析了前 {MAX_VLM_PAGES} 頁，其餘 {total - MAX_VLM_PAGES} 頁未納入索引"
+        header += f"\n\n**注意：{note}。**"
+        if progress:
+            progress(f"    ⚠ {path.name}：{note}")
+    if elided:
+        pages = "、".join(f"第 {p} 頁" for p in elided)
+        header += f"\n\n**注意：{pages} 的表格可能被模型摘要，內容未必完整。**"
+        if progress:
+            progress(f"    ⚠ {path.name}：{pages} 可能不完整，建議換用 {RECOMMENDED_VLM} 後重新索引")
     return header + "\n\n" + "\n\n".join(blocks), "；".join(errors)
 
 
@@ -540,12 +655,14 @@ def _describe_images(items: list[tuple[str, bytes]], label: str,
     for index, (name, data) in enumerate(items[:MAX_VLM_PAGES], start=1):
         if progress:
             progress(f"      視覺解析 {label} {index}/{total}（{name}）…")
-        description, error = ollama_client.describe_image(data, VLM_PROMPT)
+        description, error, still_short = _describe_once(data)
         if error:
             errors.append(f"{name}：{error}")
             continue
-        if description.strip():
-            blocks.append(f"### {label} {index}（{name}）\n\n{description.strip()}")
+        if still_short and progress:
+            progress(f"      ⚠ {label} {index} 重試後仍有省略，內容可能不完整")
+        if description:
+            blocks.append(f"### {label} {index}（{name}）\n\n{description}")
     return "\n\n".join(blocks), errors
 
 
@@ -659,11 +776,15 @@ def _extract_raw(path: Path, enable_vlm: bool, force_vlm: bool = False,
         if not enable_vlm:
             return "", False, NEEDS_VLM_MARKER + "這是圖片檔，沒有可讀取的文字層。"
         try:
-            description, error = ollama_client.describe_image(path.read_bytes(), VLM_PROMPT)
+            description, error, still_short = _describe_once(path.read_bytes())
         except Exception as exc:  # noqa: BLE001
             return "", False, f"讀取圖片失敗：{exc}"
         if error:
             return "", False, f"VLM 解析失敗：{error}"
+        if still_short:
+            if progress:
+                progress(f"    ⚠ {path.name}：重試後仍有省略，內容可能不完整")
+            description += "\n\n**注意：本圖的表格可能被模型摘要，內容未必完整。**"
         return description, True, ""
 
     try:
@@ -694,8 +815,11 @@ def _extract_raw(path: Path, enable_vlm: bool, force_vlm: bool = False,
             if images:
                 extra, errors = _describe_images(images, "圖片", progress)
                 if len(images) > MAX_VLM_PAGES:
-                    extra += (f"\n\n**注意：本檔共 {len(images)} 張圖，"
-                              f"只解析了前 {MAX_VLM_PAGES} 張。**")
+                    note = (f"本檔共 {len(images)} 張圖，"
+                            f"只解析了前 {MAX_VLM_PAGES} 張")
+                    extra += f"\n\n**注意：{note}。**"
+                    if progress:
+                        progress(f"    ⚠ {path.name}：{note}")
         if extra:
             merged = (content + "\n\n" if content else "") + \
                      "---\n\n## 圖片內容（由視覺模型判讀）\n\n" + extra
@@ -1073,6 +1197,30 @@ def _index_document(path: Path, root: Path, stats: IngestStats, enable_vlm: bool
     if force_vlm and enable_vlm and progress:
         progress(f"  {path.name}：強制視覺解析中，這一份會比較久…")
     content, used_vlm, error = extract_markdown(path, enable_vlm, force_vlm, progress)
+
+    # **有內容就收下，即使過程中出過錯。**
+    #
+    # 視覺解析是一張圖一張圖跑的，32 張裡有一張逾時是常態。原本的
+    # `if error:` 不看有沒有內容，一律把整份文件標成 failed——結果是
+    # 31 張成功的描述加上完整文字層全部丟掉，使用者看到的是「解析失敗」，
+    # 完全不知道其實只差一張圖。
+    #
+    # 這個 bug 一直都在，只是 MAX_VLM_PAGES 還是 10 的時候跑不到第 27 張圖，
+    # 所以碰不到。真正的失敗條件是「什麼都沒抽到」，不是「出過錯」。
+    if error and content:
+        with get_session() as session:
+            session.add(
+                IngestError(
+                    file_path=str(path), file_name=path.name,
+                    error_type="partial",
+                    message=f"部分內容未解析成功，其餘已納入索引：{error}",
+                )
+            )
+            session.commit()
+        if progress:
+            progress(f"    ⚠ {path.name}：部分內容未解析成功，其餘已納入索引")
+        error = ""
+
     if error:
         # 「缺少視覺模型」跟「檔案解析失敗」是兩回事，分開記錄。
         # 前者裝個模型重跑就好，不該混在解析錯誤清單裡讓人以為檔案有問題。

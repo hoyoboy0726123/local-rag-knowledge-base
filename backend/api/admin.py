@@ -292,10 +292,16 @@ def delete_document(path: str, _: dict = Depends(require_admin)) -> dict:
 
 @router.get("/errors")
 def errors(_: dict = Depends(require_admin)) -> dict:
-    """**分兩類回傳。**
+    """**分三類回傳。**
 
-    「缺少視覺模型」跟「檔案解析失敗」對管理員意味著完全不同的動作，
-    混在一起會讓人以為圖片檔壞了，實際上只是少裝一個模型。
+    「缺少視覺模型」「部分內容未解析」「檔案解析失敗」對管理員意味著
+    完全不同的動作，混在一起會讓人做錯判斷：
+      * needs_vlm —— 檔案沒問題，裝個模型重跑就好
+      * partial  —— **文件已經在索引裡**，只是有幾張圖沒讀到，可查但可能不全
+      * failures —— 真的整份沒進去
+
+    partial 特別不能混進 failures：使用者看到「失敗」會以為要重傳，
+    實際上該做的是判斷缺的那部分重不重要。
     """
     with get_session() as session:
         rows = session.query(IngestError).order_by(IngestError.occurred_at.desc()).all()
@@ -309,7 +315,9 @@ def errors(_: dict = Depends(require_admin)) -> dict:
         ]
     return {
         "needs_vlm": [i for i in items if i["error_type"] == "needs_vlm"],
-        "failures": [i for i in items if i["error_type"] != "needs_vlm"],
+        "partial": [i for i in items if i["error_type"] == "partial"],
+        "failures": [i for i in items
+                     if i["error_type"] not in ("needs_vlm", "partial")],
     }
 
 

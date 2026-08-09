@@ -506,6 +506,91 @@ check(
     all(len(c["content"].strip()) > 40 for c in chunk_text(EMPTY_SECTION, 500, 80, "b.pptx")),
 )
 
+# 表格整段沒有句號，以前會直接掉到硬切，把 `| 01012 | ROCKCHIP |` 切成
+# `| 01012 | ROCKC` 和 `HIP |`——模型讀到前半段就把「ROCKC」當成廠商名稱回報。
+TABLE = "## 廠商\n\n| 料號 | 種類 |\n" + "".join(
+    f"| 0100{i % 10} | VENDOR_NAME_{i:02d} |\n" for i in range(60)
+)
+_tc = chunk_text(TABLE, 200, 40, "t.pdf")
+check("表格切片不超過上限", all(len(c["content"]) <= 200 for c in _tc),
+      f"最長 {max(len(c['content']) for c in _tc)}")
+check(
+    "表格不切在字中間",
+    all(c["content"].rstrip().endswith("|") or c["content"].rstrip().endswith("廠商")
+        for c in _tc),
+    "；".join(repr(c["content"][-14:]) for c in _tc[:4]),
+)
+_names = "".join(c["content"] for c in _tc)
+check("每個廠商名稱都完整保留",
+      all(f"VENDOR_NAME_{i:02d}" in _names for i in range(60)),
+      [i for i in range(60) if f"VENDOR_NAME_{i:02d}" not in _names][:5])
+
+# 沒有換行可退時仍要硬切，不能無限長
+_long = "衝擊測試" * 400
+check("無換行長句仍會被切開",
+      all(len(c["content"]) <= 200 for c in chunk_text(_long, 200, 40, "x.md")))
+
+# ----------------------------------------------------------------- VLM 省略偵測
+#
+# 實際踩過的坑：VLM 把 28 列的分類表摘要成「例如：01 CPU, 02 CHIPSET 等等」，
+# 省略掉的項目從此不存在於知識庫，之後再強的檢索也救不回來。
+# 這組測試守的是「摘要要被偵測到」與「正常輸出不可誤判」兩件事——
+# 誤判的代價是每頁都白白重試一次，索引時間直接翻倍。
+from services.ingest_service import _describe_once, _looks_elided  # noqa: E402
+
+ELIDED = [
+    "例如：01 CPU, 02 CHIPSET, 03 MEMORY 等等。",
+    "包含不同製造商的編碼和名稱，如001 INTEL, 002 AMD等。",
+    "列出了不同的物料分類，如CPU、CHIPSET、MEMORY等。",
+    "其餘項目省略。",
+    "01 CPU, 02 CHIPSET, and so on",
+]
+for _text in ELIDED:
+    check(f"偵測到省略：{_text[:18]}", _looks_elided(_text))
+
+INTACT = [
+    "大類 敘述\n01 CPU\n02 CHIPSET\n03 MEMORY\n04 SYS MODULE\n0A POWER MODULE",
+    "本頁為標題頁，無表格等內容。",
+    "所有標註均以中文和英文雙語形式呈現。",
+    "這些圖片沒有顯示任何表格或流程圖。",
+    "| 類別 | 名稱 |\n| --- | --- |\n| 01 | CPU |\n| 02 | CHIPSET |",
+]
+for _text in INTACT:
+    check(f"不誤判：{_text.splitlines()[0][:18]}", not _looks_elided(_text))
+
+
+def _fake_vlm(replies):
+    """把 describe_image 換成腳本化的假模型，回傳呼叫到的提示詞。"""
+    from services import ingest_service as _is
+    from services import ollama_client as _oc
+
+    seen, original = [], _oc.describe_image
+
+    def stub(_data, prompt, model=None):
+        seen.append(prompt)
+        return replies[min(len(seen) - 1, len(replies) - 1)], ""
+
+    _oc.describe_image = stub
+    _is.ollama_client.describe_image = stub
+    try:
+        return _describe_once(b"x"), seen
+    finally:
+        _oc.describe_image = original
+        _is.ollama_client.describe_image = original
+
+
+FULL = "| 01 | CPU |\n| 02 | CHIPSET |\n| 03 | MEMORY |"
+(_text, _err, _short), _prompts = _fake_vlm([FULL])
+check("輸出完整就不重試", len(_prompts) == 1 and not _short, f"呼叫 {len(_prompts)} 次")
+
+(_text, _err, _short), _prompts = _fake_vlm(["01 CPU, 02 CHIPSET 等等。", FULL])
+check("偵測到省略會重試", len(_prompts) == 2, f"呼叫 {len(_prompts)} 次")
+check("重試成功採用新結果", _text == FULL and not _short, _text[:40])
+
+(_text, _err, _short), _prompts = _fake_vlm(["01 CPU 等等。"])
+check("重試仍省略要示警", _short is True)
+check("重試仍省略要保留內容", _text.strip() != "", _text[:40])
+
 print("\n" + "=" * 56)
 print(f"  通過 {_passed} 項，失敗 {_failed} 項")
 print("=" * 56)

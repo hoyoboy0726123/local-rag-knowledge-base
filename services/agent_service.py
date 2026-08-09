@@ -374,7 +374,10 @@ def _answer_by_section(question: str, stage_code: str | None,
             f"內容：\n{block}\n\n---\n\n問題：{question}\n\n"
             f"請只根據上面這個章節的內容回答。"
         )
-        text, err = ollama_client.generate(prompt, system=SECTION_SYSTEM, num_predict=400)
+        # 400 不夠。這條路徑**專門處理列舉型問題**，而列舉正是最會撞上限的：
+        # 實測一份分類表的章節輸出到第 29 項就被硬切在「ROCKC」中間——
+        # 前面費了一番功夫才讓模型願意逐項列出來，最後卻被 token 上限砍掉。
+        text, err = ollama_client.generate(prompt, system=SECTION_SYSTEM, num_predict=1200)
         body = rag_service.apply_blocklist(_strip_leak(text).strip()) or "（本章節未取得內容）"
         if err:
             body = f"（此章節處理失敗：{err[:80]}）"
