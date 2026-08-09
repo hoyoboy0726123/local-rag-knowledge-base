@@ -1,0 +1,236 @@
+<style>
+:root{
+  --bg:#FBFAF7; --surface:#FFFFFF; --raised:#F5F4F0;
+  --line:#E6E3DC; --line-strong:#D4D0C6;
+  --ink:#1C1B18; --ink-2:#5C5950; --ink-3:#8B877C;
+  --accent:#0F6F62; --accent-soft:#E4F0ED; --accent-line:#B8D8D1;
+  --amber:#9A6B08; --amber-soft:#FBF2DE;
+  --danger:#A03530; --danger-soft:#FBEAE8;
+  --r:10px; --r-sm:7px;
+  --sans:"Inter","Noto Sans TC",-apple-system,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
+.app{display:grid;grid-template-columns:230px 1fr;min-height:100vh}
+
+/* ---------- 側邊欄 ---------- */
+.side{background:var(--raised);border-right:1px solid var(--line);padding:18px 14px;display:flex;flex-direction:column;gap:22px}
+.brand{display:flex;align-items:center;gap:9px;padding:0 6px}
+.mark{width:26px;height:26px;border-radius:7px;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:13px;font-weight:700}
+.brand b{font-size:14.5px;letter-spacing:-.01em}
+.brand span{display:block;font-size:11px;color:var(--ink-3);font-weight:400;letter-spacing:.02em}
+.navlbl{font-size:10.5px;font-weight:600;color:var(--ink-3);letter-spacing:.09em;text-transform:uppercase;padding:0 8px;margin-bottom:5px}
+.nav{display:flex;flex-direction:column;gap:1px}
+.nav a{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:var(--r-sm);color:var(--ink-2);text-decoration:none;font-size:13.5px}
+.nav a.on{background:var(--surface);color:var(--ink);font-weight:600;box-shadow:0 1px 2px rgba(28,27,24,.05);border:1px solid var(--line)}
+.nav a:not(.on):hover{background:rgba(0,0,0,.03)}
+.ico{width:15px;text-align:center;opacity:.75;font-size:13px}
+.side-foot{margin-top:auto;border-top:1px solid var(--line);padding-top:13px}
+.who{display:flex;align-items:center;gap:9px;padding:5px 6px}
+.av{width:28px;height:28px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-size:11.5px;font-weight:700;border:1px solid var(--accent-line)}
+.who div{min-width:0}
+.who b{display:block;font-size:12.5px;font-weight:600}
+.who span{font-size:11px;color:var(--ink-3)}
+.ok{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-3);padding:4px 7px}
+.dot{width:6px;height:6px;border-radius:50%;background:#2E9E6B}
+
+/* ---------- 主區 ---------- */
+.main{display:flex;flex-direction:column;min-width:0}
+.top{height:52px;border-bottom:1px solid var(--line);background:rgba(251,250,247,.85);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:space-between;padding:0 22px;position:sticky;top:0;z-index:5}
+.top h1{font-size:15px;font-weight:650;letter-spacing:-.01em}
+.crumb{font-size:12px;color:var(--ink-3)}
+.tools{display:flex;gap:8px;align-items:center}
+.btn{border:1px solid var(--line-strong);background:var(--surface);color:var(--ink);padding:5.5px 11px;border-radius:var(--r-sm);font-size:12.5px;font-weight:550;cursor:pointer;font-family:inherit}
+.btn:hover{background:var(--raised)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.scope{border:1px solid var(--line-strong);background:var(--surface);border-radius:var(--r-sm);padding:5.5px 10px;font-size:12.5px;color:var(--ink-2)}
+
+.wrap{padding:26px 22px 50px;max-width:1180px;width:100%;margin:0 auto;display:grid;grid-template-columns:1fr 320px;gap:26px;align-items:start}
+
+/* ---------- 對話 ---------- */
+.thread{display:flex;flex-direction:column;gap:20px;min-width:0}
+.q{display:flex;gap:11px;align-items:flex-start}
+.q .av{flex:none;background:var(--raised);border-color:var(--line-strong);color:var(--ink-2)}
+.q p{padding-top:3px;font-size:14.5px;font-weight:550}
+
+.a{display:flex;gap:11px;align-items:flex-start}
+.a .av{flex:none;background:var(--accent);border-color:var(--accent);color:#fff}
+.abody{min-width:0;flex:1}
+
+.trace{display:inline-flex;align-items:center;gap:7px;background:var(--surface);border:1px solid var(--line);border-radius:99px;padding:3.5px 11px 3.5px 8px;font-size:11.5px;color:var(--ink-2);margin-bottom:11px}
+.trace b{font-weight:600;color:var(--ink)}
+.trace .k{color:var(--accent);font-weight:600}
+
+.ans h4{font-size:13px;font-weight:650;margin:15px 0 6px;letter-spacing:-.005em}
+.ans h4:first-child{margin-top:0}
+.ans p{margin-bottom:9px;color:var(--ink-2)}
+.ans ul{margin:0 0 9px 17px;color:var(--ink-2)}
+.ans li{margin-bottom:5px}
+.ans strong{color:var(--ink);font-weight:600}
+.cite{display:inline-block;min-width:17px;height:17px;line-height:16px;text-align:center;background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent-line);border-radius:5px;font-size:10.5px;font-weight:700;margin:0 1px;vertical-align:1px;cursor:pointer;padding:0 3px}
+
+table{border-collapse:collapse;width:100%;margin:4px 0 11px;font-size:13px}
+th,td{border:1px solid var(--line);padding:6.5px 10px;text-align:left}
+th{background:var(--raised);font-weight:600;font-size:12.5px}
+td{color:var(--ink-2)}
+.bad{color:var(--danger);font-weight:600}
+
+/* ---------- 來源面板 ---------- */
+.aside{position:sticky;top:74px;display:flex;flex-direction:column;gap:10px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.phead{padding:10px 13px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}
+.phead b{font-size:12.5px;font-weight:650}
+.pill{background:var(--raised);border:1px solid var(--line);border-radius:99px;padding:1px 7px;font-size:11px;color:var(--ink-3);font-weight:600}
+.src{padding:11px 13px;border-bottom:1px solid var(--line);cursor:pointer}
+.src:last-child{border-bottom:0}
+.src:hover{background:var(--raised)}
+.src.sel{background:var(--accent-soft)}
+.srow{display:flex;align-items:center;gap:7px;margin-bottom:3px}
+.num{width:17px;height:17px;flex:none;border-radius:5px;background:var(--accent);color:#fff;font-size:10.5px;font-weight:700;display:grid;place-items:center}
+.src b{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.smeta{font-size:11px;color:var(--ink-3);display:flex;gap:7px;align-items:center;margin-left:24px}
+.tag{background:var(--raised);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:10px;font-weight:600;color:var(--ink-2)}
+.snip{margin-left:24px;margin-top:5px;font-size:11.5px;color:var(--ink-3);line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+.hint{background:var(--amber-soft);border:1px solid #EBD9A8;color:var(--amber);border-radius:var(--r);padding:9px 12px;font-size:11.5px;line-height:1.55}
+.hint b{font-weight:650}
+
+/* ---------- 輸入 ---------- */
+.composer{margin-top:26px;background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--r);padding:11px 13px;box-shadow:0 1px 3px rgba(28,27,24,.05)}
+.composer input{width:100%;border:0;outline:0;font-family:inherit;font-size:14px;color:var(--ink);background:transparent}
+.composer input::placeholder{color:var(--ink-3)}
+.crow{display:flex;align-items:center;justify-content:space-between;margin-top:9px}
+.chips{display:flex;gap:6px}
+.chip{background:var(--raised);border:1px solid var(--line);border-radius:99px;padding:3px 10px;font-size:11.5px;color:var(--ink-2);cursor:pointer}
+.chip:hover{border-color:var(--line-strong);color:var(--ink)}
+.send{width:29px;height:29px;border-radius:var(--r-sm);background:var(--accent);color:#fff;border:0;display:grid;place-items:center;cursor:pointer;font-size:14px}
+</style>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="mark">R</div>
+      <div><b>RD PM 知識庫</b><span>NUC 研發流程</span></div>
+    </div>
+
+    <div>
+      <div class="navlbl">工作區</div>
+      <nav class="nav">
+        <a class="on"><span class="ico">◈</span>AI 問答</a>
+        <a><span class="ico">◱</span>階段導覽</a>
+        <a><span class="ico">☰</span>文件庫</a>
+        <a><span class="ico">◷</span>我的對話</a>
+      </nav>
+    </div>
+
+    <div>
+      <div class="navlbl">管理</div>
+      <nav class="nav">
+        <a><span class="ico">⌸</span>知識庫維護</a>
+        <a><span class="ico">◎</span>模型與設定</a>
+        <a><span class="ico">⚇</span>帳號管理</a>
+      </nav>
+    </div>
+
+    <div class="side-foot">
+      <div class="ok"><span class="dot"></span>本機引擎就緒 · 12 份文件</div>
+      <div class="who">
+        <div class="av">陳</div>
+        <div><b>陳彥廷</b><span>資深 PM</span></div>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <div>
+        <h1>AI 問答</h1>
+        <div class="crumb">回答僅依據知識庫內容，每項結論均可追溯</div>
+      </div>
+      <div class="tools">
+        <div class="scope">檢索範圍：全部階段</div>
+        <button class="btn">新對話</button>
+      </div>
+    </header>
+
+    <div class="wrap">
+      <div>
+        <div class="thread">
+          <div class="q">
+            <div class="av">陳</div>
+            <p>DVT 階段散熱測試要注意什麼？以前踩過什麼雷？</p>
+          </div>
+
+          <div class="a">
+            <div class="av">◈</div>
+            <div class="abody">
+              <div class="trace">
+                <span class="k">◐ 檢索</span>
+                <span>DVT 散熱驗證 常見疏漏</span>
+                <b>· 6 段</b>
+              </div>
+
+              <div class="ans">
+                <h4>環境溫度必須涵蓋三種條件</h4>
+                <p>散熱驗證需在 <strong>25°C、35°C、40°C</strong> 三種環境下量測滿載溫度分布，不可只在室溫驗證 <span class="cite">1</span>。過去曾因僅在室溫測試，導致產品在高溫機房降頻 <span class="cite">3</span>。</p>
+
+                <h4>歷年實際發生的問題</h4>
+                <table>
+                  <tr><th>問題</th><th>根因</th><th>判定</th></tr>
+                  <tr><td>導熱膏塗佈不均</td><td>手工塗佈，同批溫差達 8°C</td><td class="bad">未通過</td></tr>
+                  <tr><td>M.2 SSD 過熱降速</td><td>熱模擬僅考慮 CPU</td><td class="bad">未通過</td></tr>
+                  <tr><td>風扇噪音超標</td><td>轉速曲線過於保守</td><td>已改善</td></tr>
+                </table>
+
+                <h4>建議做法</h4>
+                <ul>
+                  <li>改用預貼式導熱片，或制定專用治具與作業標準 <span class="cite">2</span></li>
+                  <li>熱模擬納入所有發熱源，不只 CPU <span class="cite">2</span></li>
+                  <li>噪音量測提前到 EVT，不要等 DVT 才發現 <span class="cite">4</span></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer">
+          <input placeholder="接著問…（可直接追問「那 PVT 呢」）">
+          <div class="crow">
+            <div class="chips">
+              <span class="chip">還有嗎</span>
+              <span class="chip">那 PVT 階段呢</span>
+              <span class="chip">哪些是必要產出物</span>
+            </div>
+            <button class="send">↑</button>
+          </div>
+        </div>
+      </div>
+
+      <aside class="aside">
+        <div class="panel">
+          <div class="phead"><b>參考來源</b><span class="pill">6</span></div>
+
+          <div class="src sel">
+            <div class="srow"><span class="num">1</span><b>DVT階段作業規範.md</b></div>
+            <div class="smeta"><span class="tag">DVT</span><span>切片 #2</span><span>距離 0.83</span></div>
+            <div class="snip">散熱驗證應涵蓋 25°C、35°C 及 40°C 三種環境溫度下的滿載溫度分布量測…</div>
+          </div>
+
+          <div class="src">
+            <div class="srow"><span class="num">2</span><b>DVT_散熱問題_LessonLearnt.md</b></div>
+            <div class="smeta"><span class="tag">DVT</span><span>切片 #1</span><span>距離 0.91</span></div>
+            <div class="snip">導熱膏塗佈不均導致同批機台溫度差異達 8°C，建議改用預貼式導熱片…</div>
+          </div>
+
+          <div class="src">
+            <div class="srow"><span class="num">3</span><b>EVT_LessonLearnt_歷年彙整.md</b></div>
+            <div class="smeta"><span class="tag">EVT</span><span>切片 #3</span><span>距離 1.02</span></div>
+            <div class="snip">僅在室溫驗證未模擬高溫機房環境，導致產品實際部署時降頻…</div>
+          </div>
+        </div>
+
+        <div class="hint"><b>為什麼只回答這些？</b> 系統只依據上方來源作答。知識庫沒有的內容不會被補完，也不會臆測。</div>
+      </aside>
+    </div>
+  </div>
+</div>

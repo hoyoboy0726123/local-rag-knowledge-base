@@ -1,0 +1,66 @@
+/* 設計 token —— **色彩、圓角、陰影的唯一來源**。
+ *
+ * 元件裡不要寫死顏色，一律引用這裡的變數。
+ * 這樣改配色只需要動一個檔案，也不會出現「兩個地方的灰不一樣」。
+ *
+ * 為什麼不用深色 AI 套版：
+ *   1. 使用者是 RD PM，在辦公室日光下長時間讀規範文件，
+ *      深色底讀長篇中文的疲勞度明顯較高。
+ *   2. 這是內部工具，該安靜耐用，不是營造科技感的展示品。
+ *   3. 漸層與發光會稀釋內容層次——知識庫最重要的視覺任務是
+ *      讓人分辨「哪些是原文、哪些是 AI 的話、哪些是來源」。
+ */
+
+:root {
+  /* 底層：暖中性。不用純白（刺眼）也不用藍灰（那正是套版味） */
+  --bg: #FBFAF7;
+  --surface: #FFFFFF;
+  --raised: #F5F4F0;
+  --line: #E6E3DC;
+  --line-strong: #D4D0C6;
+
+  /* 文字三階，不用純黑 */
+  --ink: #1C1B18;
+  --ink-2: #5C5950;
+  --ink-3: #8B877C;
+
+  /* 強調色只有一個：深青綠 = 品牌 + 引註 + 已驗證 */
+  --accent: #0F6F62;
+  --accent-soft: #E4F0ED;
+  --accent-line: #B8D8D1;
+
+  /* 語意色低彩度，避免螢光感。
+   * **用途不可混用**：
+   *   琥珀 = 需要人介入但系統仍可運作（缺 VLM、等待模型）
+   *   紅   = 真正的失敗（解析失敗、驗證未通過）
+   * V1 的教訓：把「缺少視覺模型」和「檔案解析失敗」混在一起，
+   * 管理員會以為檔案壞了。顏色也一樣不能混。 */
+  --amber: #9A6B08;
+  --amber-soft: #FBF2DE;
+  --amber-line: #EBD9A8;
+  --danger: #A03530;
+  --danger-soft: #FBEAE8;
+  --danger-line: #F0CFCC;
+  --ok: #2E9E6B;
+
+  --r: 10px;
+  --r-sm: 7px;
+  --shadow: 0 1px 3px rgba(28, 27, 24, .05);
+
+  /* Inter 負責英數、Noto Sans TC 負責中文，字高一致不會錯落 */
+  --sans: "Inter", "Noto Sans TC", -apple-system, "Segoe UI", "Microsoft JhengHei", sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;          /* 中文長段落不要低於 1.6 */
+  -webkit-font-smoothing: antialiased;
+}
+
+button, input, textarea, select { font-family: inherit; font-size: inherit; }
+a { color: inherit; }

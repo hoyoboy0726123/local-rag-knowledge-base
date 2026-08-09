@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+python-jose[cryptography]
+python-multipart
+sqlalchemy
+sqlite-vec
+markitdown[all]
+requests
+pandas
+pypdfium2
+pillow
+tokenizers>=0.20
