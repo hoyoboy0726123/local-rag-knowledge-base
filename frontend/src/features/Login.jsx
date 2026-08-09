@@ -25,12 +25,12 @@ export default function Login({ onLogin }) {
     <div className="login">
       <form className="card" onSubmit={submit}>
         <div className="mark" style={{ width: 34, height: 34, fontSize: 16 }}>R</div>
-        <h2>RD PM 研發管理知識庫</h2>
+        <h2>本機知識庫</h2>
         <p className="sub">所有 AI 運算都在本機完成，研發資料不會離開內網</p>
 
         <div className="field">
           <label>帳號</label>
-          <input value={u} onChange={(e) => setU(e.target.value)} autoFocus placeholder="pm01" />
+          <input value={u} onChange={(e) => setU(e.target.value)} autoFocus placeholder="admin" />
         </div>
         <div className="field">
           <label>密碼</label>
@@ -41,7 +41,7 @@ export default function Login({ onLogin }) {
 
         <div className="demo">
           展示帳號（密碼皆為 <code>demo1234</code>）<br />
-          <code>admin</code> 知識庫管理員　<code>pm01</code> / <code>pm02</code> 一般使用者
+          <code>admin</code> 知識庫管理員　<code>user01</code> / <code>user02</code> 一般使用者
         </div>
       </form>
     </div>

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -106,7 +107,7 @@ check("管理員可登入", status == 200 and "token" in data)
 ADMIN = data.get("token", "")
 
 status, data = call("/api/auth/login", method="POST",
-                    body={"username": "pm01", "password": "demo1234"})
+                    body={"username": "user01", "password": "demo1234"})
 check("一般使用者可登入", status == 200)
 USER = data.get("token", "")
 
@@ -372,14 +373,25 @@ def _body_of(chunk_content: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _squash(text: str) -> str:
+    """去掉所有空白再比對。
+
+    切片器在合併段落時會把換行正規化（原文的兩行在切片裡變成同一行），
+    逐字比對會因此誤判成「切片內容不在原文裡」——實測 1262 個切片中
+    有 248 個這樣誤報，內容其實一個字都沒少。
+    **這項測試要守的是「內容有沒有同源」，不是「空白排列一不一樣」。**
+    """
+    return re.sub(r"\s+", "", text)
+
+
 _chunks = call("/api/admin/chunks", ADMIN)[1].get("chunks", [])
 _orphan = []
 for _doc in _docs_seen:
     _name = _doc.get("文件名稱")
     _c, _b = call(f"/api/documents/content?path={urllib.parse.quote(_doc['路徑'])}", ADMIN)
-    _text = _b.get("content", "")
+    _text = _squash(_b.get("content", ""))
     for _ch in [c for c in _chunks if c.get("文件") == _name]:
-        if _body_of(_ch.get("內容", ""))[:60] not in _text:
+        if _squash(_body_of(_ch.get("內容", "")))[:60] not in _text:
             _orphan.append(_name)
 check(
     "每個切片都能在完整文件中找到",

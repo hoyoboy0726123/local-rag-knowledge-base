@@ -54,7 +54,7 @@ export default function Layout({ user, onLogout }) {
       <aside className="side">
         <div className="brand">
           <div className="mark">R</div>
-          <div className="lbl"><b>RD PM 知識庫</b><span>NUC 研發流程</span></div>
+          <div className="lbl"><b>本機知識庫</b><span>文件不離開內網</span></div>
           <button className="collapse" onClick={() => setSlim((v) => !v)}
                   title={slim ? '展開側邊欄' : '收折側邊欄'}>
             {slim ? '»' : '«'}

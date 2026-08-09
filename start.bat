@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-title RD PM Knowledge Base V2 (React + FastAPI)
+title Local Knowledge Base (React + FastAPI)
 
 REM ---------------------------------------------------------------
 REM  IMPORTANT: keep this file 100%% ASCII.
@@ -125,10 +125,10 @@ echo.
 :RUN
 echo.
 echo ============================================================
-echo   RD PM Knowledge Base V2
+echo   Local Knowledge Base
 echo ------------------------------------------------------------
 echo   URL       http://localhost:%APP_PORT%
-echo   Accounts  admin / pm01 / pm02      password: demo1234
+echo   Accounts  admin / user01 / user02      password: demo1234
 echo   Stop      press Ctrl+C in this window
 echo ============================================================
 

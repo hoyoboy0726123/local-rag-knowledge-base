@@ -25,8 +25,8 @@ KB_DIR = Path(__file__).parent / "sample_knowledge_base"
 
 USERS = [
     ("admin", "知識庫管理員", ROLE_ADMIN),
-    ("pm01", "林建成（資深 PM）", ROLE_USER),
-    ("pm02", "何佳蓉（新進 PM）", ROLE_USER),
+    ("user01", "一般使用者 A", ROLE_USER),
+    ("user02", "一般使用者 B", ROLE_USER),
 ]
 
 STAGE_INFO = {

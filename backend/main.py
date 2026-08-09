@@ -23,7 +23,7 @@ from backend.api import admin, auth, chat, stages  # noqa: E402
 from database import init_db  # noqa: E402
 
 app = FastAPI(
-    title="RD PM 研發管理知識庫 V2",
+    title="本機知識庫 API",
     description="React + FastAPI 版。所有 AI 運算都在本機完成。",
     version="2.0.0",
 )

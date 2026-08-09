@@ -37,7 +37,7 @@ from services import ollama_client, reranker
 DISTANCE_THRESHOLD = 1.35
 
 SYSTEM_INSTRUCTION = (
-    "你是 NUC 研發流程的知識庫助理，服務對象是 RD 專案經理。\n"
+    "你是這個知識庫的助理。\n"
     "規則：\n"
     "1. 只依據提供的參考資料作答，不要補充資料中沒有的內容。\n"
     "2. 每個結論後面標註來源編號，格式為 [1]、[2]。\n"
