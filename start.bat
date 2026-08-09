@@ -96,6 +96,28 @@ popd
 
 :DONE_SETUP
 echo done > "%MARKER%"
+
+:INITDB
+REM  Create the database and demo accounts on first run.
+REM
+REM  knowledge.db is NOT in version control - it holds the full parsed text of
+REM  every indexed document, which must never be published. The backend creates
+REM  the tables on startup, but NOT the accounts, so without this step a fresh
+REM  clone starts with zero users and nobody can log in.
+REM
+REM  No sample documents are created: this system is domain-agnostic and you
+REM  point it at your own folder. Run "seed_data.py --with-demo-docs" if you
+REM  want the bundled demo set.
+if exist "%~dp0knowledge.db" goto RUN
+echo.
+echo   First run - creating database and demo accounts ...
+"%VENV_PY%" "%~dp0seed_data.py"
+if errorlevel 1 (
+  echo   ERROR: database initialisation failed.
+  pause
+  exit /b 1
+)
+
 echo.
 echo   Setup complete.
 echo.

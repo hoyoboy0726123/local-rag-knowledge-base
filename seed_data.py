@@ -428,9 +428,16 @@ def build_knowledge_base() -> int:
     return count
 
 
-def seed_db() -> None:
+def seed_db(knowledge_root: str | None = None) -> None:
+    """建立資料表、六大階段定義與展示帳號。**不產生任何文件。**
+
+    `knowledge_root` 留空時不寫入該設定——這是刻意的：
+    這套系統本身與領域無關，知識庫要指向哪個資料夾應該由使用者決定。
+    預設塞一個範例資料夾，會讓人以為系統只能用在那批文件上。
+    """
     init_db()
-    set_setting("knowledge_root", str(KB_DIR))
+    if knowledge_root:
+        set_setting("knowledge_root", knowledge_root)
 
     with get_session() as session:
         if session.query(Stage).count() == 0:
@@ -461,18 +468,32 @@ def seed_db() -> None:
         session.commit()
 
 
-def main() -> None:
-    count = build_knowledge_base()
-    seed_db()
-    print("[OK] 範例資料建立完成")
-    print(f"     知識庫資料夾：{KB_DIR}")
-    print(f"     文件 {count} 份，依 NUC 六大階段分子目錄存放")
+def main(with_demo_docs: bool = False) -> None:
+    """初始化。
+
+    **預設只建帳號，不產生文件。** 這套系統與領域無關——
+    附帶一批 NUC 研發流程的範例文件會讓人以為它只能用在那個場景，
+    而且新使用者第一件事通常是指向自己的資料夾，範例只是噪音。
+    想看範例再加 `--with-demo-docs`。
+    """
+    count = build_knowledge_base() if with_demo_docs else 0
+    seed_db(str(KB_DIR) if with_demo_docs else None)
+
+    print("[OK] 初始化完成")
     print(f"     帳號密碼統一為：{DEMO_PASSWORD}")
     for username, display_name, role in USERS:
         print(f"     - {username:<8} {display_name} ({role})")
     print()
-    print("     下一步：以 admin 登入 → 知識庫維護 → 增量更新，即可建立索引。")
+    if with_demo_docs:
+        print(f"     已產生 {count} 份範例文件於：{KB_DIR}")
+        print("     下一步：以 admin 登入 → 知識庫維護 → 增量更新，即可建立索引。")
+    else:
+        print("     下一步：以 admin 登入 → 知識庫維護 → 指定你的文件資料夾")
+        print("             → 按「增量更新」建立索引。")
+        print("     （想先看範例：python seed_data.py --with-demo-docs）")
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    main(with_demo_docs="--with-demo-docs" in sys.argv)
