@@ -533,24 +533,6 @@ def answer_stream(
         yield apply_blocklist(piece)
 
 
-def suggest_questions(stage_code: str | None) -> list[str]:
-    """依當前階段提供預設問題。"""
-    generic = [
-        "這個階段需要完成哪些產出物？",
-        "有哪些常見的失誤或 Lesson Learnt？",
-        "需要哪些部門協同作業？",
-    ]
-    by_stage = {
-        "Concept": ["概念階段的市場評估要做到什麼程度？", "誰負責核准進入下一階段？"],
-        "Plan": ["專案計畫書要包含哪些章節？", "資源規劃有什麼注意事項？"],
-        "EVT": ["EVT 階段需要哪些測試報告？", "EVT 常見的設計問題有哪些？"],
-        "DVT": ["DVT 階段的散熱驗證重點是什麼？", "DVT 要準備幾台機器？"],
-        "PVT": ["試產申請的流程為何？", "PVT 階段的良率標準是多少？"],
-        "MP": ["量產移交需要哪些文件？", "量產後的問題追蹤流程是什麼？"],
-    }
-    return (by_stage.get(stage_code or "", []) + generic)[:5]
-
-
 def keyword_search(keyword: str, stage_code: str | None = None, limit: int = 30) -> pd.DataFrame:
     """關鍵字搜尋。Ollama 未啟動時的備援查詢路徑。"""
     if not keyword.strip():

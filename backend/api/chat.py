@@ -56,11 +56,6 @@ def messages(session_id: int, user: dict = Depends(current_user)) -> dict:
     return {"messages": rows}
 
 
-@router.get("/suggestions")
-def suggestions(stage_code: str | None = None, _: dict = Depends(current_user)) -> dict:
-    return {"questions": rag_service.suggest_questions(stage_code)}
-
-
 @router.get("/engine")
 def engine(_: dict = Depends(current_user)) -> dict:
     status_ = ollama_client.check_status()

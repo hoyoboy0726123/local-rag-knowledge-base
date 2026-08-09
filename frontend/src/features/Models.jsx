@@ -38,7 +38,6 @@ function Picker({ label, name, value, options, hint, onChange }) {
 
 export default function Models() {
   const [data, setData] = useState(null)
-  const [vlm, setVlm] = useState(null)
   const [saved, setSaved] = useState('')
   const [rr, setRr] = useState(null)
   const [dl, setDl] = useState(null)   // 下載進度
@@ -74,11 +73,6 @@ export default function Models() {
     setSaved(`已更新 ${key}`); load()
   }
 
-  const selfTest = async () => {
-    setVlm({ busy: true })
-    try { setVlm(await api.post('/api/admin/vlm-self-test')) }
-    catch (e) { setVlm({ passed: false, detail: e.message }) }
-  }
 
   if (!data) return <div className="empty">載入中…</div>
 
@@ -151,28 +145,6 @@ export default function Models() {
           </div>
         </div>
 
-        <div className="panel" style={{ marginTop: 14 }}>
-          <div className="phead">
-            <b>🧪 測試 VLM 辨識</b>
-            <button className="btn" onClick={selfTest} disabled={vlm?.busy}>
-              {vlm?.busy ? '辨識中…' : '執行自檢'}
-            </button>
-          </div>
-          <div style={{ padding: 15 }}>
-            <div style={{ fontSize: 11.5, color: 'var(--ink-2)', lineHeight: 1.65 }}>
-              宣告 <code>vision</code> 能力不代表真的能用。實測 <code>gemma4:e4b</code> 收到
-              純色圖片時，仍會產出詳盡的「研發流程圖」描述——它完全沒看圖，
-              是從提示詞幻想出來的。用這種模型解析掃描件，
-              <b>會把虛構內容寫進知識庫且讀起來很有說服力</b>。
-            </div>
-            {vlm && !vlm.busy && (
-              <div className={`note ${vlm.passed ? 'accent' : 'danger'}`} style={{ marginTop: 10 }}>
-                {vlm.passed ? '✅ ' : '❌ '}{vlm.detail}
-                {!vlm.passed && <div style={{ marginTop: 4 }}><b>請勿使用此模型解析掃描件。</b></div>}
-              </div>
-            )}
-          </div>
-        </div>
       </div>
     </>
   )

@@ -53,7 +53,7 @@ DEFAULT_KB_DIR = Path(__file__).resolve().parent.parent / "sample_knowledge_base
 MIN_EMBEDDED_IMAGE_BYTES = 20_000
 
 VLM_PROMPT = (
-    "這是一份研發流程文件中的圖片。請詳細描述圖中的所有資訊，"
+    "這是一份文件中的圖片。請詳細描述圖中的所有資訊，"
     "包含文字內容、表格結構與數值、流程圖的節點與流向。"
     "若圖中有表格，請以文字逐列敘述其內容。直接輸出描述，不要加開場白。"
 )
@@ -94,7 +94,6 @@ def vlm_ready() -> tuple[bool, str]:
 
     只檢查「有沒有裝、有沒有啟用」，不做辨識品質自檢——
     那個要跑一次推理，不適合放在每次建索引前。
-    品質自檢在「模型設定」頁的按鈕（見 `vlm_self_test`）。
     """
     if get_setting("enable_vlm", "1") != "1":
         return False, "VLM 功能目前為停用狀態"
@@ -411,52 +410,6 @@ MAX_VLM_PAGES = 10
 
 # 送進 VLM 前的算圖倍率。2 倍對掃描的中文字已足夠辨識，再高只是變慢。
 PDF_RENDER_SCALE = 2
-
-
-def vlm_self_test(model: str | None = None) -> tuple[bool, str, str]:
-    """送一張內容已知的圖給 VLM，確認它真的在看圖。回傳 (是否通過, 輸出, 說明)。
-
-    **這不是效能測試，是防止知識庫被灌進虛構內容的檢查。**
-
-    宣告了 `vision` 能力不代表真的能用。實測 `gemma4:e4b` 收到純紅色與純藍色
-    的圖片，兩次都產出洋洋灑灑的「研發流程圖」描述——它完全沒看圖，
-    只是從 prompt 裡的「研發流程」四個字幻想出內容。
-    若拿它當 VLM，每一份掃描件都會以虛構內容進入知識庫，而且讀起來很有說服力。
-    """
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-    except ImportError as exc:
-        return False, "", f"缺少 Pillow：{exc}"
-
-    marker = "QTR-7391"
-    value = "93.4%"
-    verdict = "FAIL"
-
-    image = Image.new("RGB", (900, 220), "white")
-    draw = ImageDraw.Draw(image)
-    font = ImageFont.load_default()
-    for size in (48, 40, 32):
-        try:
-            font = ImageFont.truetype("arial.ttf", size)
-            break
-        except OSError:
-            continue
-    draw.text((40, 40), f"DOC {marker}", font=font, fill="black")
-    draw.text((40, 110), f"YIELD {value}   RESULT {verdict}", font=font, fill="black")
-
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    output, error = ollama_client.describe_image(buffer.getvalue(), VLM_PROMPT, model=model)
-    if error:
-        return False, "", f"呼叫失敗：{error}"
-
-    missed = [t for t in (marker, value, verdict) if t not in output]
-    if missed:
-        return False, output, (
-            f"沒有讀出圖中的 {missed}。"
-            "此模型可能根本沒有處理圖片，用它解析掃描件會把虛構內容寫進知識庫。"
-        )
-    return True, output, "圖中的文字與數值都正確讀出。"
 
 
 def _looks_scanned(path: Path, content: str) -> bool:

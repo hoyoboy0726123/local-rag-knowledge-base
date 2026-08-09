@@ -43,7 +43,7 @@ function Keywords({ chunkId, initial, onSaved }) {
     <div className="kwbox">
       <h5>◎ 檢索關鍵字</h5>
       <p className="exp">
-        使用者的口語常與文件用語對不上（「以前踩過什麼雷」vs「Lesson Learnt」）。
+        使用者的口語常與文件用語對不上（口語說法 vs 文件裡的專業用語）。
         在這裡補同義詞可提高這一段被找到的機率——這些字
         <b>只影響向量比對，不會出現在回答或來源卡片裡</b>。切片內容本身不開放修改。
       </p>

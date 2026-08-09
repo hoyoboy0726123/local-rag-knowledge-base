@@ -406,18 +406,6 @@ def reranker_download(_: dict = Depends(require_admin)) -> StreamingResponse:
                              headers={"Cache-Control": "no-cache"})
 
 
-@router.post("/vlm-self-test")
-def vlm_self_test(_: dict = Depends(require_admin)) -> dict:
-    """送一張內容已知的圖，確認 VLM 真的在讀圖。
-
-    宣告 `vision` 能力不代表真的能用：實測 `gemma4:e4b` 收到純色圖片
-    仍會產出詳盡的「流程圖」描述——它完全沒處理圖片，
-    拿它解析掃描件會把虛構內容寫進知識庫。
-    """
-    passed, output, detail = ingest_service.vlm_self_test()
-    return {"passed": passed, "output": output[:1500], "detail": detail}
-
-
 # ------------------------------------------------------------------ 帳號
 @router.get("/users")
 def users(_: dict = Depends(require_admin)) -> dict:

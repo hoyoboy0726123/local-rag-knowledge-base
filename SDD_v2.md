@@ -361,7 +361,6 @@ V1 的經驗是這個狀態必須隨時看得到，否則使用者不知道為�
 | DELETE | `/api/chat/sessions/{id}` | 刪除對話（**強制 user_id 過濾**） |
 | GET | `/api/chat/sessions/{id}/messages` | 訊息＋還原來源（**強制 user_id 過濾**） |
 | POST | `/api/chat/ask` | **SSE 串流**，見下 |
-| GET | `/api/chat/suggestions` | 建議問題 |
 | GET | `/api/chat/engine` | Ollama 狀態與工具調用能力 |
 
 `/api/chat/ask` 直接把 `agent_service.answer()` 產出的事件轉成 SSE：
@@ -396,7 +395,6 @@ event: done     data: {"answer":"…","chunk_ids":[12,7,3],"searches":1}
 | POST | `/api/admin/search-test` | 檢索測試（回傳距離） |
 | GET | `/api/admin/errors` | 解析狀態（`needs_vlm` 與 `failures` **分開兩類**） |
 | GET/PUT | `/api/admin/models` | 模型設定 |
-| POST | `/api/admin/vlm-self-test` | VLM 辨識自檢 |
 | GET | `/api/admin/users` | 帳號清單 |
 
 > **文件的內容與下載走 query string 的 `path`，不是路徑參數的 `id`。**

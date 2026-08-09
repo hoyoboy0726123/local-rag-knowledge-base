@@ -177,7 +177,6 @@ export default function Chat() {
   const [messages, setMessages] = useState([])
   const [stages, setStages] = useState([])
   const [scope, setScope] = useState('')
-  const [suggestions, setSuggestions] = useState([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [live, setLive] = useState(null)     // 進行中的回答
@@ -191,7 +190,6 @@ export default function Chat() {
 
   useEffect(() => {
     api.get('/api/stages').then((d) => setStages(d.stages))
-    api.get('/api/chat/suggestions').then((d) => setSuggestions(d.questions.slice(0, 3)))
     loadSessions()
   }, [])
 
@@ -332,7 +330,7 @@ export default function Chat() {
         <div style={{ minWidth: 0 }}>
           {messages.length === 0 && !live && (
             <div className="note accent" style={{ marginBottom: 18 }}>
-              <b>可以這樣問：</b> 問完之後直接追問「還有嗎」「那 PVT 階段呢」都聽得懂。
+              <b>可以這樣問：</b> 問完之後直接追問「還有嗎」也聽得懂，不必重複主詞。
               知識庫沒有的內容系統會直接說查無資訊，不會臆測。
             </div>
           )}
@@ -418,17 +416,15 @@ export default function Chat() {
           <div className="composer">
             <input
               value={input}
-              placeholder="輸入你的問題…（可直接追問「那 PVT 呢」）"
+              placeholder="輸入你的問題…"
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && ask(input)}
               disabled={busy}
             />
             <div className="crow">
-              <div className="chips">
-                {messages.length === 0
-                  ? suggestions.map((q) => <span className="chip" key={q} onClick={() => ask(q)}>{q}</span>)
-                  : ['還有嗎', '那 PVT 階段呢'].map((q) => <span className="chip" key={q} onClick={() => ask(q)}>{q}</span>)}
-              </div>
+              {/* 不放建議問題按鈕：任何預設問句都綁定特定領域，
+                  對其他知識庫的使用者是噪音。 */}
+              <span />
               <button className="send" onClick={() => ask(input)} disabled={busy}>↑</button>
             </div>
           </div>

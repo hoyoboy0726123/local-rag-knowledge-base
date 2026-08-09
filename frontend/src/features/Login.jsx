@@ -26,7 +26,7 @@ export default function Login({ onLogin }) {
       <form className="card" onSubmit={submit}>
         <div className="mark" style={{ width: 34, height: 34, fontSize: 16 }}>R</div>
         <h2>本機知識庫</h2>
-        <p className="sub">所有 AI 運算都在本機完成，研發資料不會離開內網</p>
+        <p className="sub">所有 AI 運算都在本機完成，文件不會離開這台電腦</p>
 
         <div className="field">
           <label>帳號</label>
