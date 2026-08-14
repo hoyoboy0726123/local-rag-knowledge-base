@@ -11,12 +11,17 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend.deps import require_admin
-from database import get_session, get_setting, set_setting
+from database import get_int_setting, get_session, get_setting, set_setting
 from models import IngestError
 from services import (auth_service, ingest_service, ollama_client, rag_service,
                       reranker, stage_service)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+# 上下文視窗的可設定範圍。下限取 2048 是因為再低連系統指令都放不下；
+# 上限取 32768 是因為超過這個數，一般消費級顯卡的 KV cache 已經吃不消。
+MIN_NUM_CTX = 2048
+MAX_NUM_CTX = 32768
 
 
 class KeywordsBody(BaseModel):
@@ -36,6 +41,7 @@ class ModelsBody(BaseModel):
     embed_model: str | None = None
     llm_model: str | None = None
     vlm_model: str | None = None
+    num_ctx: int | None = None
 
 
 # ------------------------------------------------------------------ 切片
@@ -332,6 +338,7 @@ def models(_: dict = Depends(require_admin)) -> dict:
             "embed_model": get_setting("embed_model"),
             "llm_model": get_setting("llm_model"),
             "vlm_model": get_setting("vlm_model"),
+            "num_ctx": get_int_setting("num_ctx", ollama_client.DEFAULT_NUM_CTX),
         },
         "supports_tools": ollama_client.supports_tools() if status_.alive else False,
     }
@@ -350,6 +357,15 @@ def update_models(body: ModelsBody, _: dict = Depends(require_admin)) -> dict:
         if value and value != get_setting(key):
             set_setting(key, value)
             changed.append(key)
+
+    # num_ctx 要夾在合理範圍內。設得比提示詞還小，檢索結果會被安靜丟掉
+    # （見 ollama_client 的 NUM_CTX_NOTE）；設得太大則吃光顯示記憶體，
+    # 模型會被拆去 CPU 跑，慢到不堪用。兩種都不會報錯，所以在這裡擋。
+    if body.num_ctx is not None:
+        value = max(MIN_NUM_CTX, min(int(body.num_ctx), MAX_NUM_CTX))
+        if str(value) != get_setting("num_ctx"):
+            set_setting("num_ctx", str(value))
+            changed.append("num_ctx")
     return {"changed": changed}
 
 
