@@ -36,6 +36,36 @@ function Picker({ label, name, value, options, hint, onChange }) {
   )
 }
 
+/* 上下文視窗。這不是效能微調，是「檢索結果會不會被安靜丟掉」的關鍵設定：
+ * 設太小時超出的部分會被丟棄，而且不會有任何錯誤訊息——使用者只會看到
+ * 模型答非所問或把指示複述一遍。 */
+const CTX_OPTIONS = [4096, 8192, 16384, 32768]
+
+function ContextField({ value, onChange }) {
+  const list = CTX_OPTIONS.includes(value) ? CTX_OPTIONS : [value, ...CTX_OPTIONS]
+  return (
+    <div className="field">
+      <label>上下文視窗下限（num_ctx）</label>
+      <select className="sel" style={{ width: '100%' }} value={value}
+              onChange={(e) => onChange('num_ctx', Number(e.target.value))}>
+        {list.map((o) => <option key={o} value={o}>{o.toLocaleString()} token</option>)}
+      </select>
+      <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+        模型單次能讀進去的最大量（提示詞 + 回答共用）。
+        <b>這是下限</b>——檢索結果較多時系統會自動往上調（8K → 16K → 32K），
+        避免內容被安靜截斷。調高下限會增加顯示記憶體佔用，
+        可能使模型被拆到 CPU 執行而明顯變慢。
+      </div>
+      {value < 8192 && (
+        <div className="note amber" style={{ marginTop: 6 }}>
+          ⚠️ 低於 8192 時實測會發生：檢索結果放不下而被安靜丟掉，
+          模型收到殘缺的提示，可能改為複述系統指示而不是回答問題。
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Models() {
   const [data, setData] = useState(null)
   const [saved, setSaved] = useState('')
@@ -94,6 +124,7 @@ export default function Models() {
             <Picker label="VLM 模型" name="vlm_model" value={data.current.vlm_model}
                     options={data.available} onChange={change}
                     hint="解析圖片與掃描件用。換模型後請按下方按鈕自檢。" />
+            <ContextField value={data.current.num_ctx} onChange={change} />
             {saved && <div className="note accent">{saved}</div>}
 
             {/* 重排序是選配：小文件用不到，大型規格書才有明顯差別。

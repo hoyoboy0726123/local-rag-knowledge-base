@@ -324,6 +324,26 @@
   gap: 14px; flex-wrap: wrap;
 }
 .widehint { font-size: 12px; color: var(--ink-3); }
+
+/* 原始片段。**未經 AI 改寫的檢索內容**，預設收合。
+   規格表、對照表這類內容的原文形式本身就是最好的答案形式——任何改寫都會
+   掉欄位（實測「大類／敘述」對照表被改寫成條列後，代號欄整欄消失）。
+   限高並可捲動：切片可能上千字，撐開整頁反而更難讀。 */
+.rawsrc {
+  margin-top: 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--raised); max-height: 460px; overflow-y: auto;
+}
+.rawitem { padding: 10px 12px; border-top: 1px solid var(--line); }
+.rawitem:first-child { border-top: 0; }
+.rawhead {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 6px;
+  font-size: 11.5px; font-weight: 600; color: var(--ink-3);
+}
+/* 原文的排版要看得出來，但不能跟答案本身搶視覺重量 */
+.rawitem :is(p, ul, ol, table) { font-size: 12px; margin: 5px 0; }
+.rawitem table { border-collapse: collapse; display: block; overflow-x: auto; }
+.rawitem :is(th, td) { border: 1px solid var(--line); padding: 3px 7px; }
+.rawitem :is(h1, h2, h3, h4, h5, h6) { font-size: 12.5px; margin: 7px 0 3px; }
 /* 檢索膠囊上的模式標示。撈廣模式是自動偵測觸發的，
    不標出來使用者無從得知這次為什麼撈了 30 段。 */
 .modetag {

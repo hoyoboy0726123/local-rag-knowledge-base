@@ -183,6 +183,7 @@ export default function Chat() {
   const [selected, setSelected] = useState(null)
   const [opened, setOpened] = useState(null) // 卡片內展開的來源序號
   const [modal, setModal] = useState(null)   // 看全文的來源
+  const [rawFor, setRawFor] = useState(null) // 展開原始片段的訊息索引
   const [railOpen, setRailOpen] = useState(true)
   const endRef = useRef(null)
 
@@ -229,7 +230,7 @@ export default function Chat() {
    * 一般模式每個命中只補前後各一段；wide 會擴展到整個結構單元（章節／投影片／
    * 記錄）。**做成使用者按下才啟用**，因為它不是免付費的：脈絡變多會變慢，
    * 而且塞太多反而會讓模型忽略中間的內容。答案不完整時再花這個成本才划算。 */
-  const ask = async (question, wide = false, broad = false) => {
+  const ask = async (question, wide = false) => {
     if (!question.trim() || busy) return
     setInput(''); setBusy(true); setSelected(null); setOpened(null)
 
@@ -239,12 +240,12 @@ export default function Chat() {
       setSessionId(sid)
     }
 
-    setMessages((m) => [...m, { role: 'user', content: question, wide, broad }])
-    setLive({ searches: [], text: '', sources: [], wide, broad })
+    setMessages((m) => [...m, { role: 'user', content: question, wide }])
+    setLive({ searches: [], text: '', sources: [], wide })
 
     try {
       await stream('/api/chat/ask',
-        { session_id: sid, question, stage_code: scope || null, wide, broad },
+        { session_id: sid, question, stage_code: scope || null, wide },
         (name, data) => {
           if (name === 'search') {
             setLive((l) => ({ ...l, searches: [...l.searches, data] }))
@@ -342,7 +343,6 @@ export default function Chat() {
                 <div className="qtext">
                   {m.content}
                   {m.wide && <span className="widetag">更多脈絡</span>}
-                  {m.broad && <span className="widetag">更多來源</span>}
                 </div>
               </div>
             ) : (
@@ -354,9 +354,6 @@ export default function Chat() {
                       <span className="k">◐ 檢索</span>{s.query}
                       {s.stage && <span>（{s.stage}）</span>}
                       <b>· {s.hits} 段</b>
-                      {/* 撈廣模式是自動偵測觸發的，不標示的話使用者無從得知
-                          這次為什麼撈了 30 段而不是 6 段。 */}
-                      {s.broad && <span className="modetag">撈更多來源</span>}
                     </div>
                   ))}
                   <Answer text={m.content} onCite={gotoCite} />
@@ -365,29 +362,51 @@ export default function Chat() {
                       免得重複點下去只是原地重跑。 */}
                   {(() => {
                     const q = messages[i - 1]
-                    if (!q || q.role !== 'user') return null
-                    // 兩種補救方向不同：一個挖得深、一個撈得廣。
-                    // 已經用過的那個就不再提供，免得重複點只是原地重跑。
-                    const usedBroad = q.broad || (m.searches || []).some((s) => s.broad)
-                    if (q.wide && usedBroad) return null
+                    const hasQ = q && q.role === 'user'
+                    const canWide = hasQ && !q.wide
+                    const raws = m.sources || []
+                    if (!canWide && !raws.length) return null
                     return (
-                      <div className="widerow">
-                        <span className="widehint">答案不夠完整？</span>
-                        {!q.wide && (
-                          <button className="lnk" disabled={busy}
-                                  onClick={() => ask(q.content, true, q.broad)}
-                                  title="每個來源擴展到整個章節／投影片／記錄——讀得更深">
-                            🔍 用更多脈絡重問
-                          </button>
+                      <>
+                        <div className="widerow">
+                          {canWide && <span className="widehint">答案不夠完整？</span>}
+                          {canWide && (
+                            <button className="lnk" disabled={busy}
+                                    onClick={() => ask(q.content, true)}
+                                    title="每個來源擴展到整個章節／投影片／記錄——讀得更深">
+                              🔍 用更多脈絡重問
+                            </button>
+                          )}
+                          {/* 原始片段。**AI 的敘述再怎麼寫都是改寫**，而規格表、
+                              對照表這類內容的原文形式本身就是最好的答案形式——
+                              實測「大類／敘述」對照表被改寫成條列後代號欄整欄消失。
+                              預設收合：多數問題不需要，需要的人點一下就看得到。 */}
+                          {raws.length > 0 && (
+                            <button className="lnk"
+                                    onClick={() => setRawFor(rawFor === i ? null : i)}
+                                    title="顯示檢索到的原始內容，未經 AI 改寫">
+                              📄 {rawFor === i ? '收合原始片段' : `顯示原始片段（${raws.length}）`}
+                            </button>
+                          )}
+                        </div>
+                        {rawFor === i && (
+                          <div className="rawsrc">
+                            {raws.map((s) => (
+                              <div className="rawitem" key={s.index}>
+                                <div className="rawhead">
+                                  <span className="num">{s.index}</span>
+                                  {s.locator || s.file_name}
+                                </div>
+                                {/* 用 Markdown 渲染，表格才會是表格。
+                                    這裡刻意不套引註色塊：原文裡的數字不是引註。 */}
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {s.content}
+                                </ReactMarkdown>
+                              </div>
+                            ))}
+                          </div>
                         )}
-                        {!usedBroad && (
-                          <button className="lnk" disabled={busy}
-                                  onClick={() => ask(q.content, q.wide, true)}
-                                  title="一次撈 30 段而不是 6 段——找得更廣，適合「有哪些」這類問題">
-                            🔎 撈更多來源重問
-                          </button>
-                        )}
-                      </div>
+                      </>
                     )
                   })()}
                 </div>
@@ -401,7 +420,6 @@ export default function Chat() {
                   {live.searches.map((s, j) => (
                     <div className="trace" key={j}>
                       <span className="k">◐ 檢索</span>{s.query}<b>· {s.hits} 段</b>
-                      {s.broad && <span className="modetag">撈更多來源</span>}
                     </div>
                   ))}
                   {live.text
