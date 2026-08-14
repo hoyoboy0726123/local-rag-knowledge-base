@@ -527,21 +527,29 @@ def _describe_once(data: bytes) -> tuple[str, str, bool]:
     return retry, "", _looks_elided(retry)
 
 
-def _vlm_read_pdf(path: Path, progress=None) -> tuple[str, str]:
-    """把掃描件的每一頁算成圖片後交給 VLM。回傳 (內容, 錯誤)。
+def _vlm_read_pdf(path: Path, progress=None,
+                  *, scanned: bool = True) -> tuple[str, str, bool]:
+    """把每一頁算成圖片後交給 VLM。回傳 (內容, 錯誤, 是否完整轉錄)。
 
     `pypdfium2` 與 `Pillow` 都是 MarkItDown 已經帶進來的相依套件，
     不需要為了這條路徑額外安裝東西。
+
+    第三個回傳值 `complete` 表示「每一頁都成功轉錄了」。**只有它為真時，
+    呼叫端才可以丟掉文字層**——頁數超過 `MAX_VLM_PAGES`、或某頁解析失敗
+    被跳過時，那些頁只存在於文字層，丟掉等於永久遺失。
+
+    `scanned` 只影響開頭那段說明文字：掃描件是「沒有文字層可用」，強制
+    視覺解析是「有文字層但選擇不用」，兩者不能共用同一句話。
     """
     try:
         import pypdfium2
     except ImportError as exc:
-        return "", f"缺少 PDF 算圖套件：{exc}"
+        return "", f"缺少 PDF 算圖套件：{exc}", False
 
     try:
         pdf = pypdfium2.PdfDocument(str(path))
     except Exception as exc:  # noqa: BLE001
-        return "", f"無法開啟 PDF：{type(exc).__name__}: {str(exc)[:120]}"
+        return "", f"無法開啟 PDF：{type(exc).__name__}: {str(exc)[:120]}", False
 
     total = len(pdf)
     blocks: list[str] = []
@@ -569,9 +577,15 @@ def _vlm_read_pdf(path: Path, progress=None) -> tuple[str, str]:
         pdf.close()
 
     if not blocks:
-        return "", "；".join(errors) or "VLM 未產生任何內容"
+        return "", "；".join(errors) or "VLM 未產生任何內容", False
 
-    header = f"（本檔案無文字層，以下內容由 VLM 從掃描影像判讀，共 {total} 頁）"
+    # 每一頁都轉錄成功才算完整：頁數沒被上限砍掉，而且沒有任何一頁出錯跳過。
+    complete = total <= MAX_VLM_PAGES and len(blocks) == total
+
+    if scanned:
+        header = f"（本檔案無文字層，以下內容由 VLM 從掃描影像判讀，共 {total} 頁）"
+    else:
+        header = f"（本檔案指定強制視覺解析，以下內容由 VLM 逐頁判讀，共 {total} 頁）"
     # 這兩個警告以前只寫進內容裡，使用者要點開「原始文件」才看得到。
     # 一併打進 progress，讓它出現在上傳當下的日誌。
     if total > MAX_VLM_PAGES:
@@ -584,7 +598,7 @@ def _vlm_read_pdf(path: Path, progress=None) -> tuple[str, str]:
         header += f"\n\n**注意：{pages} 的表格可能被模型摘要，內容未必完整。**"
         if progress:
             progress(f"    ⚠ {path.name}：{pages} 可能不完整，建議換用 {RECOMMENDED_VLM} 後重新索引")
-    return header + "\n\n" + "\n\n".join(blocks), "；".join(errors)
+    return header + "\n\n" + "\n\n".join(blocks), "；".join(errors), complete
 
 
 def get_doc_option(file_path: str) -> bool:
@@ -796,16 +810,21 @@ def _extract_raw(path: Path, enable_vlm: bool, force_vlm: bool = False,
     except Exception as exc:  # noqa: BLE001
         return "", False, f"{type(exc).__name__}: {str(exc)[:200]}"
 
-    # 強制視覺解析：**文字層與圖片內容兩者都要**，不是二選一。
+    # 強制視覺解析。這條路徑處理的是「有文字也有大量圖表」的文件（簡報、
+    # 含流程圖的規範書）。既有的掃描件路徑是「沒有文字層才補救」，會直接
+    # 略過這種檔案——圖裡的架構圖、流程圖、表格截圖全部丟失，而那往往才是重點。
     #
-    # 這條路徑處理的是「有文字也有大量圖表」的文件（簡報、含流程圖的規範書）。
-    # 既有的掃描件路徑是「沒有文字層才補救」，會直接略過這種檔案——
-    # 圖裡的架構圖、流程圖、表格截圖全部丟失，而那往往才是重點。
+    # **PDF 與 Office 的取捨不同，因為兩者的 VLM 涵蓋範圍根本不同：**
+    #   * PDF   走 `_vlm_read_pdf()`，**逐頁算圖轉錄整份文件** → 文字層是重複的
+    #   * Office 走 `_office_images()`，只抽**嵌入的圖片**    → 文字層是唯一正文
+    # 所以只有 PDF 能丟文字層，Office 丟了等於把正文刪光。
     if force_vlm and enable_vlm and suffix not in IMAGE_TYPES:
         extra, errors = "", []
+        full_transcript = False  # VLM 是否已完整涵蓋整份文件
         if suffix == ".pdf":
-            rendered, error = _vlm_read_pdf(path, progress)
+            rendered, error, complete = _vlm_read_pdf(path, progress, scanned=False)
             extra = rendered
+            full_transcript = complete
             if error:
                 errors.append(error)
         else:
@@ -821,8 +840,18 @@ def _extract_raw(path: Path, enable_vlm: bool, force_vlm: bool = False,
                     if progress:
                         progress(f"    ⚠ {path.name}：{note}")
         if extra:
-            merged = (content + "\n\n" if content else "") + \
-                     "---\n\n## 圖片內容（由視覺模型判讀）\n\n" + extra
+            if full_transcript:
+                # 每一頁都轉錄成功時，文字層講的是同一件事，而且是品質較差的
+                # 那一份：抽取雙欄表格會錯行。實測「原物料總表」被拆成「18」、
+                # 「DISPLAY」、「(LCD/OLED/EPD)」三段散落各行，檢索時與正確的
+                # VLM 版一起被撈出來，模型分不出哪份可信，答案就把代號與名稱
+                # 配錯（出現「MEMORY (ADAPTER/POWER)」這種不存在的類別）。
+                merged = extra
+            else:
+                # 沒有完整涵蓋（超過頁數上限、或有頁面解析失敗）就必須留著
+                # 文字層——那些頁的內容只存在於文字層，丟掉就永久遺失了。
+                merged = (content + "\n\n" if content else "") + \
+                         "---\n\n## 圖片內容（由視覺模型判讀）\n\n" + extra
             return merged, True, "；".join(errors)
         # 沒抽到圖也不算失敗——文字層照樣收下，只是把原因講清楚
         if content:
@@ -841,7 +870,8 @@ def _extract_raw(path: Path, enable_vlm: bool, force_vlm: bool = False,
                 ), False, ""
             return "", False, NEEDS_VLM_MARKER + "這是掃描件，沒有可讀取的文字層。"
 
-        rescued, error = _vlm_read_pdf(path, progress)
+        # 掃描件本來就沒有可用的文字層，完整與否不影響取捨，直接忽略旗標。
+        rescued, error, _ = _vlm_read_pdf(path, progress)
         if rescued:
             return rescued, True, ""
         return content, False, error or "掃描件解析失敗"
@@ -1139,6 +1169,75 @@ def restore_keywords(file_path: str, pieces: list[dict]) -> dict[int, tuple[str,
     return restored
 
 
+# 分桶用的開頭字數。重複迴圈吐出來的區塊開頭必然相同，用它分桶就能把
+# 比對限制在同一桶內，不必 n² 兩兩比。
+DEDUPE_HEAD_CHARS = 40
+
+
+def _dedupe_pieces(pieces: list[dict], progress=None, file_name: str = "") -> list[dict]:
+    """丟掉內容被其他切片完全包含的重複切片。
+
+    VLM 逐頁轉錄時會卡進**重複迴圈**，把同一個區塊連續吐出好幾份。實測一份
+    16 頁 PDF 的第 10 頁產生 6 份「下載紀錄」切片（5 份逐字節相同、第 6 份是
+    前綴），2222 字，佔整個索引的 20.7%。
+
+    重複內容對檢索是毒藥：同一段存 6 份，被撈中的機率就是單份的 6 倍，會把
+    真正有用的段落擠出候選名單——實測「料件有哪些種類」的來源清單裡有 4 個
+    名額被同一份下載紀錄佔走。
+
+    既有的 `_looks_elided()` 抓的是「等等」式的**省略**，抓不到相反方向的
+    **重複**，兩者是同一類問題的兩面。
+
+    判準用**包含**而不是相等：A 的內容若完全出現在 B 裡面，丟掉 A 不會有
+    任何資訊消失，所以是安全的。順序不保證長的先出現（截斷的那份可能落在
+    前面），因此兩個方向都要處理。
+
+    **涵蓋範圍**：抓的是「開頭相同的重複區塊」，不是任意的子字串包含——
+    後者要 n² 兩兩比，而重複迴圈產生的區塊開頭一定相同，不值得為此付代價。
+    漏掉只是少去一份重複，不會誤刪。
+    """
+    records: list[tuple[dict, str]] = []
+    buckets: dict[str, list[int]] = {}
+    shorts: list[int] = []
+    dead: set[int] = set()
+
+    for piece in pieces:
+        # 正規化空白再比，避免只差一個換行就被當成不同內容
+        body = " ".join((piece.get("content") or "").split())
+        index = len(records)
+        records.append((piece, body))
+        if not body:
+            continue
+
+        if len(body) >= DEDUPE_HEAD_CHARS:
+            bucket = buckets.setdefault(body[:DEDUPE_HEAD_CHARS], [])
+            # 短段落沒有可靠的桶可待，長段落要另外跟它們比一次
+            pool = bucket + shorts
+        else:
+            # 比分桶鍵還短的段落，它的全長比鍵還小，切不出對得上的鍵——
+            # 只能跟全部比。這種段落多半是被切斷的尾巴，數量少，成本可接受。
+            bucket = None
+            pool = list(range(index))
+
+        alive = [i for i in pool if i not in dead and records[i][1]]
+        if any(body in records[i][1] for i in alive):
+            dead.add(index)          # 這段已被留下的某段涵蓋
+            continue
+        for i in alive:
+            if records[i][1] in body:
+                dead.add(i)          # 反過來，這段更完整，換掉舊的
+        (shorts if bucket is None else bucket).append(index)
+
+    if not dead:
+        return pieces
+
+    kept = [p for i, (p, _) in enumerate(records) if i not in dead]
+    if progress:
+        progress(f"    ⚠ {file_name}：去除 {len(dead)} 個重複切片"
+                 f"（{len(pieces)} → {len(kept)}），多半是視覺模型卡在重複迴圈")
+    return kept
+
+
 def _delete_chunks(doc_id: int) -> None:
     """刪除文件的所有切片與其向量。"""
     with get_session() as session:
@@ -1251,6 +1350,9 @@ def _index_document(path: Path, root: Path, stats: IngestStats, enable_vlm: bool
     size_setting = get_int_setting("chunk_size", 500)
     overlap = get_int_setting("chunk_overlap", 80)
     pieces = chunk_text(content, size_setting, overlap, base_locator=path.name)
+    # 去重要放在 restore_keywords 之前：切片編號會因為去重而位移，而
+    # restore_keywords 本來就用 content_head 指紋擋住對不上的情況。
+    pieces = _dedupe_pieces(pieces, progress, path.name)
 
     if not pieces:
         with get_session() as session:
