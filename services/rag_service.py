@@ -108,6 +108,8 @@ def retrieve(query: str, stage_code: str | None = None, top_k: int | None = None
         params.append(want)
 
         rows = conn.execute(sql, params).fetchall()
+        # 給重排序判斷用：候選池佔知識庫多少比例（見 _apply_rerank）
+        corpus_size = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
     except Exception as exc:  # noqa: BLE001
         return [], f"檢索失敗：{type(exc).__name__}: {str(exc)[:200]}"
     finally:
@@ -121,17 +123,36 @@ def retrieve(query: str, stage_code: str | None = None, top_k: int | None = None
         )
         for r in rows
     ]
-    return _apply_rerank(query, results, top_k), ""
+    return _apply_rerank(query, results, top_k, corpus_size), ""
+
+
+# 候選池佔知識庫的比例超過這個數就跳過重排序，見 _apply_rerank。
+RERANK_MIN_CORPUS_RATIO = 2
 
 
 def _apply_rerank(query: str, chunks: list[RetrievedChunk],
-                  top_k: int) -> list[RetrievedChunk]:
+                  top_k: int, corpus_size: int = 0) -> list[RetrievedChunk]:
     """用 cross-encoder 重排，取前 top_k。模型沒裝就原樣回傳。
 
     **這一步是可選的加分項，任何失敗都不能影響問答。** 因此沒有例外處理分支：
     `reranker.score()` 自己吞掉所有錯誤並回 None，這裡只判斷有沒有拿到分數。
+
+    **知識庫太小時直接跳過。** 重排序的價值來自「從一大堆候選裡撈出埋在後面
+    的那一段」——作者記錄過真正要的切片原本排第 26 的案例。但候選池已經涵蓋
+    知識庫一大半時，它做的不是篩選而是把整個知識庫重排一遍。
+
+    實測（25 個切片的知識庫，候選 18 段選 6 段）：
+      * 成本穩定 6.0 秒，佔一題總耗時的四分之一
+      * 確實改變檢索結果（7 題有 6 題撈到不同的切片）
+      * **但答案品質沒有差異**——同一組六題，開與關都是 6/6 通過
+    也就是說它在做事，只是在這個規模下做的事沒有反映到答案上。
+
+    用比例而不是絕對值當判準，知識庫長大後重排序會自動回來工作，
+    管理員不需要記得去切換開關。
     """
     if len(chunks) <= 1 or get_setting("enable_rerank", "1") != "1":
+        return chunks[:top_k]
+    if corpus_size and len(chunks) * RERANK_MIN_CORPUS_RATIO >= corpus_size:
         return chunks[:top_k]
     scores = reranker.score(query, [c.content for c in chunks])
     if not scores or len(scores) != len(chunks):
@@ -260,13 +281,21 @@ WIDE_TOTAL_MAX_CHUNKS = 40   # 全部加起來的上限，依距離由近到遠�
 class ContextBlock:
     """餵給模型的一個連續區段，可能對應多個命中切片。
 
-    `segments` 是區段內部的逐段結構：`(檢索順序編號 或 None, 位置, 內容)`。
-    **命中段各自保留自己的編號，鄰居段沒有編號。**
+    `segments` 是區段內部的逐段結構：`(chunk_id, 位置, 內容)`，**逐段都有**。
 
     這個結構是必要的，不是為了好看：合併後若整塊只掛一個編號，模型會把
     整塊內容都標成那一個來源——實測就發生過：某個設備型號明明出自
     28.1.2 的切片，卻被標成 28.1.1 的編號。逐段標號才能讓
     引註真的指得回原本那一段。
+
+    **鄰居段也要能被引用。** 早期版本把鄰居段標成「前後文，不可標註為來源」，
+    結果是模型被逼進一個無解的處境：答案就寫在鄰居段裡，規則卻說不能標它。
+    它的選擇是照答、隨便挑一個附近的編號——實測「料件有哪些種類」的 28 個
+    類別全部出自鄰居段，卻被標成命中段 [4]，而 [4] 裡根本沒有那份清單。
+    內容是真的、來源是錯的，這比純粹的捏造更難察覺。
+
+    鄰居段本來就是文件的真實內容，沒有理由不能當來源。給它編號同時也消除了
+    模型亂標的誘因。
     """
 
     file_name: str
@@ -401,19 +430,20 @@ def build_context_blocks(chunks: list[RetrievedChunk], wide: bool = False,
             for c in chunks:
                 wanted.setdefault(c.doc_id, set()).add(c.seq)
 
-    contents: dict[tuple[int, int], str] = {}
+    # 連 id 與 locator 一起撈：鄰居段也要能被引用，見 ContextBlock.segments。
+    contents: dict[tuple[int, int], tuple[int, str, str]] = {}
     with get_session() as session:
         for doc_id, seqs in wanted.items():
             rows = (
-                session.query(Chunk.seq, Chunk.content)
+                session.query(Chunk.seq, Chunk.content, Chunk.id, Chunk.locator)
                 .filter(Chunk.doc_id == doc_id, Chunk.seq.in_(sorted(seqs)))
                 .all()
             )
-            for seq, content in rows:
-                contents[(doc_id, seq)] = content
+            for seq, content, chunk_id, locator in rows:
+                contents[(doc_id, seq)] = (chunk_id, locator, content)
     # 命中段一定要在（理論上上面就撈到了，這裡是保險）
     for c in chunks:
-        contents.setdefault((c.doc_id, c.seq), c.content)
+        contents.setdefault((c.doc_id, c.seq), (c.chunk_id, c.locator, c.content))
 
     by_doc: dict[int, list[RetrievedChunk]] = {}
     for c in chunks:
@@ -434,14 +464,8 @@ def build_context_blocks(chunks: list[RetrievedChunk], wide: bool = False,
             members = [h for h in hits if h.seq in run]
             if not members:      # 純鄰居、沒有命中段的區段不用單獨列出
                 continue
-            hit_by_seq = {h.seq: h for h in members}
-            segments: list[tuple[int | None, str, str]] = []
-            for s in run:
-                hit = hit_by_seq.get(s)
-                if hit:
-                    segments.append((index_of[hit.chunk_id], hit.locator, contents[(doc_id, s)]))
-                else:
-                    segments.append((None, "", contents[(doc_id, s)]))
+            # 命中段與鄰居段一視同仁：都帶 chunk_id 與 locator，由呼叫端編號。
+            segments: list[tuple[int, str, str]] = [contents[(doc_id, s)] for s in run]
             blocks.append(
                 ContextBlock(
                     file_name=members[0].file_name,
@@ -473,6 +497,14 @@ def build_prompt(
     """
     blocks = build_context_blocks(chunks)
 
+    # 命中段先照檢索順序編號，鄰居段之後依出現順序接續——
+    # 與 agent_service 的編號規則一致，也讓命中段的編號一定比較小。
+    number_of = {c.chunk_id: i for i, c in enumerate(chunks, start=1)}
+    for block in blocks:
+        for chunk_id, _locator, _text in block.segments:
+            if chunk_id not in number_of:
+                number_of[chunk_id] = len(number_of) + 1
+
     grouped: dict[str, list[ContextBlock]] = {}
     for block in blocks:
         grouped.setdefault(block.file_name, []).append(block)
@@ -483,11 +515,8 @@ def build_prompt(
         header = f"### 文件：{file_name}" + (f"（{stage} 階段）" if stage else "")
         body = []
         for b in items:
-            for idx, locator, text in b.segments:
-                if idx is not None:
-                    body.append(f"[{idx}] {locator}\n{text}")
-                else:
-                    body.append(f"（前後文，僅供理解，不可標註為來源）\n{text}")
+            for chunk_id, locator, text in b.segments:
+                body.append(f"[{number_of[chunk_id]}] {locator}\n{text}")
         sections.append(header + "\n\n" + "\n\n".join(body))
     context = "\n\n---\n\n".join(sections)
 
