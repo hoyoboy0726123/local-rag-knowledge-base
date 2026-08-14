@@ -24,8 +24,6 @@ class AskBody(BaseModel):
     stage_code: str | None = None
     # 使用者對答案不滿意時可勾選，改用整個結構單元當脈絡重問一次
     wide: bool = False
-    # 強制撈更多來源（列舉型問題本來就會自動開啟，這是手動補開的開關）
-    broad: bool = False
 
 
 @router.get("/sessions")
@@ -84,14 +82,13 @@ def ask(body: AskBody, user: dict = Depends(current_user)) -> StreamingResponse:
         answer, chunk_ids = "", []
         try:
             for event in agent_service.answer(body.question, history, body.stage_code,
-                                              body.wide, body.broad):
+                                              body.wide):
                 kind = event["type"]
                 if kind == "search":
                     yield _sse("search", {
                         "query": event["query"],
                         "stage": event["stage"],
                         "hits": event["hits"],
-                        "broad": event.get("broad", False),
                     })
                 elif kind == "text":
                     yield _sse("text", {"piece": event["piece"]})
