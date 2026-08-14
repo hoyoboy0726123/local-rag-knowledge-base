@@ -131,13 +131,22 @@ check("共通文件端點可用（未歸屬階段的文件才有入口）",
       status == 200 and isinstance(data.get("documents"), list))
 
 print("\n=== 5. SSE 串流問答 ===")
+# **問句與斷言都不綁定任何特定內容。**
+#
+# 這套測試一度問「DVT 階段散熱測試要注意什麼？」並要求答案超過 50 字——那是
+# 為當初隨附的 NUC 範例文件寫的。範例文件移出版控後，任何人 clone 下來指向
+# 自己的資料夾，這兩項就必然失敗，而失敗的原因與程式無關。
+#
+# 這是通用知識庫，測試不能假設裡面有什麼。改為驗**機制**：檢索有沒有發生、
+# 事件順序對不對、來源有沒有回傳。至於答得出來還是誠實拒答，兩者都是正確
+# 行為，取決於使用者自己的文件。
 sid = call("/api/chat/sessions", USER, "POST")[1]["session_id"]
-result = sse("/api/chat/ask", USER, {"session_id": sid, "question": "DVT 階段散熱測試要注意什麼？"})
+result = sse("/api/chat/ask", USER, {"session_id": sid, "question": "這份文件在說明什麼？"})
 
 check("有 search 事件（Agent 確實檢索了）", "search" in result["events"])
-check("有逐字的 text 事件", result["texts"] > 5, f"{result['texts']} 則")
 check("最後有 done 事件", result["done"] is not None)
-check("done 帶回最終答案", len(result["done"].get("answer", "")) > 50)
+answer = result["done"].get("answer", "")
+check("done 帶回非空的答案", bool(answer.strip()), f"{len(answer)} 字")
 check("done 帶回來源", len(result["done"].get("sources", [])) > 0)
 # 事件順序：done 一定是最後一則，否則前端會提早收尾
 check("done 是最後一個事件", result["events"][-1] == "done", str(result["events"][-2:]))
@@ -228,7 +237,8 @@ check("還原後不再標記已編輯", reverted.get("edited") is False)
 check("沒編輯過的切片不能還原",
       call(f"/api/admin/chunks/{cid}/revert", ADMIN, "POST")[0] == 400)
 
-status, data = call("/api/admin/search-test", ADMIN, "POST", {"query": "散熱測試"})
+# 查詢字串同樣不綁定內容——這裡驗的是端點會回傳帶距離的結果，不是撈到什麼。
+status, data = call("/api/admin/search-test", ADMIN, "POST", {"query": "文件"})
 check("檢索測試回傳距離", status == 200 and "distance" in (data.get("hits") or [{}])[0])
 
 status, data = call("/api/admin/models", ADMIN)
