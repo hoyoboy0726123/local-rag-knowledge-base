@@ -27,7 +27,13 @@ set "APP_PORT=8600"
 set "MARKER=%~dp0venv\.installed"
 set "VENV_PY=%~dp0venv\Scripts\python.exe"
 
-if exist "%MARKER%" goto RUN
+REM  Jump to INITDB, not RUN. The marker only means "packages are installed";
+REM  it says nothing about the database. Jumping straight to RUN meant that
+REM  anyone who deleted knowledge.db on an already-installed machine got the
+REM  tables recreated by the backend but NO accounts, so nobody could log in
+REM  and the cause was invisible. INITDB re-checks knowledge.db and is a no-op
+REM  when it already exists.
+if exist "%MARKER%" goto INITDB
 
 echo.
 echo ============================================================
@@ -132,6 +138,14 @@ echo   Accounts  admin / user01 / user02      password: demo1234
 echo   Stop      press Ctrl+C in this window
 echo ============================================================
 
+REM  Keep the model names below in sync with the table in README.md. The two
+REM  that used to be listed here were both on the "do not use" list:
+REM  gemma4:e2b returns blank answers on follow-ups, and bge-large-zh-v1.5 is
+REM  Chinese-only with a 512 context, which missed English documents entirely.
+REM
+REM  Comments must stay OUTSIDE the if-block below: cmd.exe parses parenthesised
+REM  blocks as one unit and REM lines inside them are a known source of breakage.
+REM
 REM  Ollama powers the AI answering. The app still starts without it
 REM  (browsing and admin work fine); the sidebar shows engine status.
 curl -s -m 2 -o nul http://127.0.0.1:11434/api/tags >nul 2>&1
@@ -140,8 +154,8 @@ if errorlevel 1 (
   echo   NOTE: Ollama does not seem to be running on port 11434.
   echo   AI answering will be unavailable until you start it.
   echo   Install: https://ollama.com/download
-  echo   Models:  ollama pull gemma4:e2b
-  echo            ollama pull quentinz/bge-large-zh-v1.5
+  echo   Models:  ollama pull bge-m3
+  echo            ollama pull gemma4:12b
   echo.
 )
 
