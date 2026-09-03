@@ -576,6 +576,107 @@ for _q in ["今天午餐吃什麼", "請假流程是什麼", "料件有哪些種
           _resolve_follow_up(_q, HIST))
 
 check("沒有前文時原樣返回", _resolve_follow_up("還有嗎", None) == "還有嗎")
+
+# 第 2 層：窮舉表列不到的說法，靠一次單一職責的 LLM 判斷接住。
+#
+# **這一層會呼叫模型，所以測試把它換成假的**——要驗的是「什麼情況下會去問」
+# 與「答案怎麼被使用」，不是模型準不準。模型準不準是 SELF_CONTAINED_SYSTEM
+# 的事，會隨模型變動，不該讓測試套件跟著飄。
+import services.agent_service as _ag  # noqa: E402
+
+
+def _with_stub(query, self_contained, rewritten="料件種類 有哪些"):
+    """把第 2 層的兩次模型呼叫換成腳本化的假回應，回傳 (結果, 有沒有問模型)。"""
+    asked = []
+    real_probe, real_condense = _ag._is_self_contained, _ag.rag_service.condense_question
+    _ag._is_self_contained = lambda q: (asked.append(q), self_contained)[1]
+    _ag.rag_service.condense_question = lambda q, h: (rewritten, "")
+    try:
+        return _resolve_follow_up(query, HIST), bool(asked)
+    finally:
+        _ag._is_self_contained = real_probe
+        _ag.rag_service.condense_question = real_condense
+
+
+_r, _asked = _with_stub("那它呢", self_contained=False)
+check("句型沒命中但判定看不懂 → 改寫", _r == "料件種類 有哪些" and _asked, f"{_r} asked={_asked}")
+
+_r, _asked = _with_stub("壓力測試條件", self_contained=True)
+check("句型沒命中且判定看得懂 → 不動", _r == "壓力測試條件" and _asked, f"{_r} asked={_asked}")
+
+# 第 1 層命中時不該浪費一次 LLM 呼叫
+_r, _asked = _with_stub("還有嗎", self_contained=False)
+check("第 1 層命中就不問模型", _r == "料件有哪些種類" and not _asked, f"{_r} asked={_asked}")
+
+# 長問句一律跳過第 2 層——這是成本閘門，長句幾乎都自帶主詞
+_long = "這份文件裡壓力測試的判定標準跟溫度條件分別是什麼"
+_r, _asked = _with_stub(_long, self_contained=False)
+check("超過長度門檻不問模型", _r == _long and not _asked,
+      f"{len(_long)} 字 asked={_asked}")
+
+# condense 失敗要退回原問題，不能讓改寫出錯把整個問答帶偏
+_real = _ag.rag_service.condense_question
+_ag.rag_service.condense_question = lambda q, h: ("", "模型逾時")
+_real_probe = _ag._is_self_contained
+_ag._is_self_contained = lambda q: False
+try:
+    check("改寫失敗退回原問題", _resolve_follow_up("那它呢", HIST) == "那它呢")
+finally:
+    _ag.rag_service.condense_question = _real
+    _ag._is_self_contained = _real_probe
+# ------------------------------------------------- 第 3 層：0 段時由程式再查
+#
+# 實測 4 次有 3 次，模型檢索 0 段後直接回「知識庫中查無足夠資訊」——工具回傳
+# 已經明講「請換不同的關鍵詞再查一次」、額度也還剩兩次，它一次都沒用。
+# 所以改由程式接手：0 段就拿使用者的原問題再查一次。
+#
+# **涵蓋範圍要講清楚**：這一層擋的是「模型自己造的 query 沒撈到、但使用者
+# 的原話撈得到」。當 query 本身就等於原問題時（沒有別的候選可試），
+# 它不會做任何事——那個情境歸第 1、2 層負責。
+def _drive_answer(model_query, hits_by_query):
+    """用假的 chat_stream 與假的檢索跑一次 answer()，回傳實際查過的 query。"""
+    asked = []
+    real_stream = _ag.ollama_client.chat_stream
+    real_search = _ag._run_search
+    real_grounded, real_relevant = _ag._is_grounded, _ag._is_relevant
+
+    def stream(messages, tools=None, model=None):
+        # 第一輪要求檢索，之後直接給答案，避免無限迴圈
+        if any(m.get("role") == "tool" for m in messages):
+            yield {"type": "text", "piece": "以上是查到的內容。"}
+            return
+        yield {"type": "tool_calls", "calls": [
+            {"function": {"name": "search_knowledge_base",
+                          "arguments": {"query": model_query}}}]}
+
+    def search(q, stage, citations, wide=False):
+        asked.append(q)
+        n = hits_by_query.get(q, 0)
+        return (f"內容 for {q}" if n else "沒有找到任何內容。"), n
+
+    _ag.ollama_client.chat_stream = stream
+    _ag._run_search = search
+    _ag._is_grounded = lambda *a: True
+    _ag._is_relevant = lambda *a: True
+    try:
+        list(_ag.answer("料件有哪些種類", HIST))
+    finally:
+        _ag.ollama_client.chat_stream = real_stream
+        _ag._run_search = real_search
+        _ag._is_grounded, _ag._is_relevant = real_grounded, real_relevant
+    return asked
+
+
+_asked = _drive_answer("完全撈不到的關鍵詞", {"料件有哪些種類": 6})
+check("模型的 query 撈到 0 段時，程式用原問題再查一次",
+      "料件有哪些種類" in _asked, str(_asked))
+
+_asked = _drive_answer("料件有哪些種類", {"料件有哪些種類": 6})
+check("第一次就撈到就不重複查", _asked == ["料件有哪些種類"], str(_asked))
+
+_asked = _drive_answer("完全撈不到的關鍵詞", {})
+check("重試也撈不到時不會超過檢索額度",
+      len(_asked) <= _ag.MAX_SEARCHES, f"{len(_asked)} 次 {_asked}")
 check("前文只有追問時不會補成追問",
       _resolve_follow_up("還有嗎", [{"role": "user", "content": "還有嗎"}]) == "還有嗎")
 # 連續追問要一路往前找到真正有主題的那一句
