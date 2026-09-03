@@ -286,56 +286,15 @@ _FOLLOW_UP = re.compile(
     r"^(還有(呢|嗎|其他的?|別的)?"
     r"|其他的?呢?|別的呢?"
     r"|繼續(說)?|再說|再多說[一點些]*"
-    r"|更多|多一點|詳細(說明|一點)?[說明]*"
+    r"|更多|多一點|詳細(說明|一點)?[說明]*|[講說]清楚一點|說明白一點"
     r"|然後呢?|接下來呢?|後來呢?"
+    # 指示代名詞開頭、以「呢／嗎」收尾——拿掉前文就完全沒有主題的句型。
+    # 「那份規範的溫度上限是多少」不會中（沒有以呢／嗎收尾），
+    # 「這份文件在說明什麼？」也不會，兩者本來就自帶主題。
+    r"|[那這][^，。？?！!\n]{0,8}[呢嗎]"
+    r"|(它|他|這個|那個)[^，。？?！!\n]{0,6}[呢嗎]"
     r")[？?。！!、,，\s]*$"
 )
-
-
-# 只有比這短的問題才值得花一次 LLM 呼叫去判斷是否為追問。
-#
-# **這是成本閘門，不是正確性閘門**——兩者不可混為一談。用長度決定「要不要
-# 改寫」是錯的（「今天午餐吃什麼」只有 7 個字卻是完整問句），但用長度決定
-# 「要不要花一秒去問模型」是安全的：真正的追問（還有嗎／那這個呢／
-# 為什麼會這樣）天生就短，長問句幾乎都自帶主詞。
-#
-# 這道閘門漏掉的最壞情況，是一個長的追問沒被改寫——退回原本的行為，
-# 跟修改前一樣，不會更糟。
-FOLLOW_UP_PROBE_CHARS = 20
-
-# 「這句話單獨看得懂嗎」的判斷。**只做一件事、只回一個詞。**
-#
-# 為什麼要獨立成一次呼叫，而不是寫進 CONDENSE_SYSTEM：那份提示詞裡其實已經
-# 有「換了話題就是換了話題，不要把前一題的主題硬掛上來」這條規則，但它得跟
-# 「改寫成獨立問題」這個主任務擠在同一次生成裡，實測會被壓過去——
-# 「今天午餐吃什麼」就是這樣被改寫成「PVT 階段的產出物」的。
-#
-# 拆開之後這個判斷沒有任何競爭對手，輸出只有一個詞。這跟 `_is_relevant`、
-# `_is_grounded` 是同一個模式，那兩個也是為了同樣的理由才從提示詞裡拆出來的。
-SELF_CONTAINED_SYSTEM = (
-    "你只做一件事：判斷一句話**不看對話紀錄**能不能理解。\n"
-    "只回 YES 或 NO 一個詞，不要解釋、不要標點。\n\n"
-    "看得懂它在問什麼 → YES。**即使話題冷門、即使跟任何資料庫都無關，"
-    "只要它是完整的問句就是 YES。**\n"
-    "缺少主詞或指涉對象、單獨看不知道在問什麼 → NO。\n\n"
-    "YES：今天午餐吃什麼／請假流程是什麼／料件有哪些種類／壓力測試的條件\n"
-    "NO：還有嗎／那這個呢／繼續／為什麼／再多說一點／那它呢"
-)
-
-
-def _is_self_contained(question: str) -> bool:
-    """這句話不看前文能不能理解。判斷不出來時一律當作看得懂。
-
-    失敗方向是刻意的：當成看得懂 → 不改寫 → 退回修改前的行為；
-    當成看不懂 → 改寫 → 有機會把使用者問的東西換掉。後者嚴重得多。
-    """
-    verdict, error = ollama_client.generate(
-        f"這句話：{question}\n\n不看對話紀錄看得懂嗎？只回 YES 或 NO。",
-        system=SELF_CONTAINED_SYSTEM, num_predict=8,
-    )
-    if error:
-        return True
-    return "NO" not in verdict.strip().upper()[:6]
 
 
 def _resolve_follow_up(query: str, history: list[dict] | None) -> str:
@@ -347,41 +306,28 @@ def _resolve_follow_up(query: str, history: list[dict] | None) -> str:
     知識庫沒東西，實際上只是問錯了。這跟 `_is_relevant` 要解決的是同一類問題：
     會被忽略的規則就不該只寫在提示詞裡。
 
-    分兩層，順序是刻意的：
+    命中句型就補回使用者上一個實質問題的**原話**，不做任何推測性改寫。
 
-      1. **窮舉句型**（免費、精準）：命中就補回使用者上一個實質問題的**原話**，
-         不做任何推測性改寫。
-      2. **問模型一次**（約 1 秒）：句型沒命中、句子又短到像追問時才啟動，
-         判斷「這句話單獨看得懂嗎」，看不懂才交給 `condense_question` 改寫。
+    **這裡曾經有第二層：問模型「這句話單獨看得懂嗎」，看不懂就交給
+    `condense_question` 改寫。已經移除。** 動機是窮舉表列不全，但實測模型會
+    誤判——「今天午餐吃什麼」被判成看不懂，於是按前文改寫，一個合法的拒答
+    變成一整段潤滑油規格。這正是這個檔案早就記載過的那個回歸，而它是隨機
+    發生的：單元測試把那個判斷 stub 掉就完全看不到。
 
-    第 2 層存在的理由是窮舉表不可能列全（「那它呢」「這個跟前面差在哪」）；
-    但它必須擺在第 1 層後面——能免費解決的就不該花一秒。
+    誤判的代價（把使用者問的東西換掉）遠大於漏接（模型多半自己會補），
+    所以判斷一律用結構，不用模型。列不到的說法就讓它漏——0 段時還有
+    `answer()` 裡那道「用原問題重查」的補救接住。
     """
-    if not history:
+    if not history or not _FOLLOW_UP.match(query.strip()):
         return query
-    stripped = query.strip()
-
-    # 第 1 層：窮舉句型。命中就直接補回上一個實質問題，不花任何 LLM 呼叫。
-    if _FOLLOW_UP.match(stripped):
-        for record in reversed(history):
-            if record.get("role") != "user":
-                continue
-            previous = (record.get("content") or "").strip()
-            # 上一句自己也是追問就再往前找，否則會補成「還有嗎 還有嗎」
-            if previous and not _FOLLOW_UP.match(previous):
-                return previous
-        return query
-
-    # 第 2 層：句型沒命中、句子又短到像追問時，才問模型一次。
-    #
-    # 順序不能顛倒：第 1 層免費且精準，能擋掉的就不要浪費一秒。
-    # 第 2 層負責的是窮舉表列不到的說法（「那它呢」「這個跟前面差在哪」）。
-    if len(stripped) > FOLLOW_UP_PROBE_CHARS or _is_self_contained(stripped):
-        return query
-    rewritten, error = rag_service.condense_question(stripped, history)
-    if error or not rewritten:
-        return query
-    return rewritten
+    for record in reversed(history):
+        if record.get("role") != "user":
+            continue
+        previous = (record.get("content") or "").strip()
+        # 上一句自己也是追問就再往前找，否則會補成「還有嗎 還有嗎」
+        if previous and not _FOLLOW_UP.match(previous):
+            return previous
+    return query
 
 
 class _Citations:
