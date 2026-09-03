@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from backend.api import admin, auth, chat, stages  # noqa: E402
-from database import init_db  # noqa: E402
+from database import get_session, init_db  # noqa: E402
 
 app = FastAPI(
     title="本機知識庫 API",
@@ -34,9 +34,43 @@ app.include_router(stages.router)
 app.include_router(admin.router)
 
 
+# 預設密碼。與 `seed_data.DEMO_PASSWORD` 相同，但**不從那裡 import**——
+# seed_data 會拉進整套建立範例文件的相依，只為了比對一個字串不值得。
+DEMO_PASSWORD = "demo1234"
+
+
+def _warn_default_passwords() -> None:
+    """啟動時檢查還有誰在用預設密碼，直接印在主控台。
+
+    只警告不強制。強制改密碼會擋住「發下去讓大家先試用」這個情境，
+    而這正是這套系統目前的用途。但**預設密碼寫在公開的 README 裡**，
+    掛上區網之後等於門是開的——所以警告要夠明顯，不能只寫在文件裡。
+    """
+    from services.auth_service import hash_password
+    from models import User
+
+    with get_session() as session:
+        weak = [
+            u.username for u in session.query(User).filter(User.is_active).all()
+            if hash_password(DEMO_PASSWORD, u.salt) == u.password_hash
+        ]
+    if not weak:
+        return
+    bar = "!" * 72
+    print(bar, flush=True)
+    print(f"  WARNING: {len(weak)} account(s) still use the default password "
+          f"'{DEMO_PASSWORD}'", flush=True)
+    print(f"    {', '.join(weak)}", flush=True)
+    print("  This password is published in README.md. Anyone on the LAN can "
+          "log in.", flush=True)
+    print("  Change it in the app: 個人設定 -> 修改密碼", flush=True)
+    print(bar, flush=True)
+
+
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    _warn_default_passwords()
 
 
 @app.get("/api/health")

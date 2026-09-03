@@ -550,6 +550,44 @@ _long = "衝擊測試" * 400
 check("無換行長句仍會被切開",
       all(len(c["content"]) <= 200 for c in chunk_text(_long, 200, 40, "x.md")))
 
+# ----------------------------------------------------------------- JWT 金鑰
+#
+# 這裡原本是一個寫死在原始碼裡的固定金鑰。原始碼是公開的 repo，所以那串字
+# 等於公開資訊——任何人都能自己簽一張 role=ADMIN 的 token，不需要帳號密碼。
+# 現在改成首次啟動自動產生並存進資料庫。
+#
+# 三件事都要守住，少一件這個修正就沒有意義：
+#   1. 原始碼裡不能再有可用的預設金鑰
+#   2. 用那串舊金鑰偽造的 token 必須被拒絕
+#   3. 金鑰要持久——不然每次重啟就把所有人踢出去（那正是當初用固定值的理由）
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from jose import jwt as _jwt  # noqa: E402
+
+_deps_src = pathlib.Path("backend/deps.py").read_text(encoding="utf-8")
+check("原始碼裡沒有寫死的金鑰",
+      "leslie-v2-dev" not in _deps_src and "token_urlsafe" in _deps_src)
+
+_forged = _jwt.encode(
+    {"sub": "1", "username": "admin", "role": "ADMIN",
+     "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
+    "leslie-v2-dev-secret-change-in-production", algorithm="HS256")
+check("用舊的公開金鑰偽造的 ADMIN token 被拒", call("/api/auth/me", _forged)[0] == 401)
+
+# 隨便一組別的金鑰也一樣要被擋
+_other = _jwt.encode(
+    {"sub": "1", "username": "admin", "role": "ADMIN",
+     "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
+    "another-guessed-secret", algorithm="HS256")
+check("用其他金鑰偽造的 token 被拒", call("/api/auth/me", _other)[0] == 401)
+
+from database import get_setting as _get_setting  # noqa: E402
+
+_stored = _get_setting("jwt_secret")
+check("金鑰已存進資料庫（重啟才不會把所有人踢出去）", len(_stored) >= 32, f"{len(_stored)} 字元")
+check("金鑰不是可猜測的固定值", _stored != "leslie-v2-dev-secret-change-in-production")
+
+
 # ----------------------------------------------------------------- 設定預設值
 #
 # num_ctx 的預設值寫在兩個地方：models.DEFAULT_SETTINGS（建立資料庫時寫入）
