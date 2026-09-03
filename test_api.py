@@ -550,6 +550,24 @@ _long = "衝擊測試" * 400
 check("無換行長句仍會被切開",
       all(len(c["content"]) <= 200 for c in chunk_text(_long, 200, 40, "x.md")))
 
+# ------------------------------------------------- _run_search 的回傳形狀
+#
+# 它有五個 return，散在函式各處。改成回傳三個值時漏掉了三個，而**漏掉的那些
+# 只有在特定分支才會走到**——一般問題測不出來，要等到「檢索 0 段」或「內容
+# 前面給過了」才炸，那時使用者看到的是整個問答沒有任何回應。
+# 用 AST 檢查所有 return 的形狀，比逐一手動確認可靠。
+import ast as _ast  # noqa: E402
+
+_tree = _ast.parse(pathlib.Path("services/agent_service.py").read_text(encoding="utf-8"))
+_fn = [n for n in _ast.walk(_tree)
+       if isinstance(n, _ast.FunctionDef) and n.name == "_run_search"][0]
+_returns = [n for n in _ast.walk(_fn) if isinstance(n, _ast.Return)]
+_bad = [n.lineno for n in _returns
+        if not isinstance(n.value, _ast.Tuple) or len(n.value.elts) != 3]
+check("_run_search 每個 return 都是三元組", not _bad, f"第 {_bad} 行不是")
+check("_run_search 的 return 沒有變少", len(_returns) >= 5, f"只剩 {len(_returns)} 個")
+
+
 # ----------------------------------------------------------------- JWT 金鑰
 #
 # 這裡原本是一個寫死在原始碼裡的固定金鑰。原始碼是公開的 repo，所以那串字
@@ -686,8 +704,12 @@ finally:
 # **涵蓋範圍要講清楚**：這一層擋的是「模型自己造的 query 沒撈到、但使用者
 # 的原話撈得到」。當 query 本身就等於原問題時（沒有別的候選可試），
 # 它不會做任何事——那個情境歸第 1、2 層負責。
-def _drive_answer(model_query, hits_by_query):
-    """用假的 chat_stream 與假的檢索跑一次 answer()，回傳實際查過的 query。"""
+def _drive_answer(model_query, hits_by_query, seen_only=False):
+    """用假的 chat_stream 與假的檢索跑一次 answer()，回傳實際查過的 query。
+
+    `seen_only` 模擬「有撈到內容，但這一輪前面已經全部給過了」——它同樣是
+    0 段，但重試毫無意義。追問「還有嗎」幾乎必然落在這一種。
+    """
     asked = []
     real_stream = _ag.ollama_client.chat_stream
     real_search = _ag._run_search
@@ -705,7 +727,8 @@ def _drive_answer(model_query, hits_by_query):
     def search(q, stage, citations, wide=False):
         asked.append(q)
         n = hits_by_query.get(q, 0)
-        return (f"內容 for {q}" if n else "沒有找到任何內容。"), n
+        return ((f"內容 for {q}" if n else "沒有找到任何內容。"), n,
+                seen_only and n == 0)
 
     _ag.ollama_client.chat_stream = stream
     _ag._run_search = search
@@ -730,6 +753,20 @@ check("第一次就撈到就不重複查", _asked == ["料件有哪些種類"], 
 _asked = _drive_answer("完全撈不到的關鍵詞", {})
 check("重試也撈不到時不會超過檢索額度",
       len(_asked) <= _ag.MAX_SEARCHES, f"{len(_asked)} 次 {_asked}")
+
+# **這一項是為了一個實際踩到的災難加的。**
+#
+# 「有內容但前面給過了」跟「真的沒找到」都是 0 段。第一版把兩者混為一談，
+# 於是追問「還有嗎」撈回同一批切片後不斷重試：六次檢索、106 秒，最後還是
+# 回「查無足夠資訊」——比不重試更慢也更差。
+_asked = _drive_answer("料件有哪些種類", {}, seen_only=True)
+check("內容只是「前面給過了」時不重試",
+      _asked == ["料件有哪些種類"], f"{len(_asked)} 次 {_asked}")
+
+# 補救整輪只做一次，否則 MAX_SEARCHES 形同虛設
+_asked = _drive_answer("撈不到的詞", {})
+check("自動補查整輪只做一次",
+      _asked.count("料件有哪些種類") <= 1, str(_asked))
 check("前文只有追問時不會補成追問",
       _resolve_follow_up("還有嗎", [{"role": "user", "content": "還有嗎"}]) == "還有嗎")
 # 連續追問要一路往前找到真正有主題的那一句

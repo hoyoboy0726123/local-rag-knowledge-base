@@ -409,13 +409,23 @@ class _Citations:
 
 
 def _run_search(query: str, stage_code: str | None, citations: _Citations,
-                wide: bool = False) -> tuple[str, int]:
-    """執行檢索並排版成模型讀得懂的文字。回傳 (內容, 命中數)。"""
+                wide: bool = False) -> tuple[str, int, bool]:
+    """執行檢索並排版成模型讀得懂的文字。回傳 (內容, 新增命中數, 是否都給過了)。
+
+    **第三個值不能省。** `hits == 0` 代表兩件完全不同的事：
+
+      * 真的沒有相關內容 —— 換個關鍵詞重試是合理的
+      * 有內容，但這一輪前面已經全部給過了 —— 重試毫無意義
+
+    兩者混在一起的代價是實測出來的：追問「還有嗎」會撈回同一批切片，
+    於是自動重試機制一輪一輪地重查，六次檢索、106 秒，最後還是回
+    「查無足夠資訊」——比不重試更慢也更差。
+    """
     chunks, error = rag_service.retrieve(query, stage_code)
     if error:
-        return f"檢索失敗：{error}", 0
+        return f"檢索失敗：{error}", 0, False
     if not chunks:
-        return "沒有找到任何內容。請換不同的關鍵詞再查一次。", 0
+        return "沒有找到任何內容。請換不同的關鍵詞再查一次。", 0, False
 
     # **已經給過的切片不再重複餵。**
     #
@@ -431,7 +441,8 @@ def _run_search(query: str, stage_code: str | None, citations: _Citations,
     fresh = [c for c in chunks if not citations.seen(c.chunk_id)]
     if not fresh:
         return (f"這次檢索到的 {len(chunks)} 段內容，前面都已經提供過了，沒有新的資料。\n"
-                f"請改用**明顯不同**的關鍵詞再查，或直接根據已有的內容作答。"), 0
+                f"**不要再檢索了。** 請直接根據前面已經提供的內容回答；"
+                f"如果該列的都已經列出來了，就說明知識庫中沒有更多相關資料。"), 0, True
     chunks = fresh
 
     # 引註編號一定要在擴展前先配好：`citations.number()` 是跨輪次累積的，
@@ -502,10 +513,10 @@ def _run_search(query: str, stage_code: str | None, citations: _Citations,
     if not _is_relevant(query, body):
         return ("檢索到的內容與這個問題無關，知識庫裡沒有這方面的資料。\n"
                 f"請直接回覆「{NO_RELEVANT_ANSWER}」，"
-                "不要用其他主題的內容拼湊答案。"), 0
+                "不要用其他主題的內容拼湊答案。"), 0, False
 
     tail = "\n\n（若以上內容不足以回答使用者的問題，請換個關鍵詞再查一次。）"
-    return f"檢索到 {len(chunks)} 段內容：\n\n{body}{warning}{tail}", len(chunks)
+    return f"檢索到 {len(chunks)} 段內容：\n\n{body}{warning}{tail}", len(chunks), False
 
 
 def answer(question: str, history: list[dict] | None = None,
@@ -530,6 +541,11 @@ def answer(question: str, history: list[dict] | None = None,
     answer_text = ""
     searches = 0
     nudged = False
+    # 整輪只自動補查一次，見下方 `auto_retried` 的說明
+    auto_retried = False
+    # 連續幾次檢索回報「這些前面都給過了」。到 2 就收掉工具。
+    seen_only_streak = 0
+    exhausted = False
     # 全程是否曾經撈到與問題相關的內容。沒有的話，不管模型寫了什麼都不採用。
     found_relevant = False
     # 每一輪檢索交給模型的內容，最後用來比對答案是不是從裡面寫出來的。
@@ -537,7 +553,17 @@ def answer(question: str, history: list[dict] | None = None,
 
     for round_no in range(MAX_SEARCHES + 2):
         # 額度用完的最後一輪不給工具，逼模型用手上的資料作答或誠實說沒有。
-        tools = [SEARCH_TOOL] if round_no < MAX_SEARCHES else None
+        #
+        # `exhausted` 是第二道收口：**檢索額度還沒用完，但知識庫已經榨乾了**。
+        # 追問「還有嗎」時第一次就撈到全部相關內容，之後每次檢索都回
+        # 「前面都已經提供過了」，模型卻會一直換關鍵詞再試。實測一次追問查了
+        # 5 次、花 88 秒，最後因為拿不到新東西而回「查無足夠資訊」11 個字——
+        # 而它手上明明有第一次撈到的 6 段。
+        #
+        # 提示詞已經改成「不要再檢索了」，但那又是一條要跟其他規則競爭的指示。
+        # 連續兩次都是「給過了」就直接收掉工具，讓它只能作答。
+        tools = ([SEARCH_TOOL] if round_no < MAX_SEARCHES and not exhausted
+                 else None)
 
         # 一次都還沒查就吐出來的文字不能直接顯示給使用者。
         #
@@ -614,7 +640,8 @@ def answer(question: str, history: list[dict] | None = None,
                 # 就什麼都不剩的句型，「今天午餐吃什麼」是完整問句、不在其中，
                 # 所以不會重蹈上面那個覆轍。差別在**無差別改寫 vs 窮舉的句型**。
                 query = _resolve_follow_up(question, history)
-                content, hits = _run_search(query, stage_code, citations, wide)
+                content, hits, _seen_only = _run_search(
+                    query, stage_code, citations, wide)
                 searches += 1
                 found_relevant = found_relevant or hits > 0
                 if hits:
@@ -697,7 +724,8 @@ def answer(question: str, history: list[dict] | None = None,
             query = _resolve_follow_up(query, history)
             # 檢索範圍只認 UI 上的選擇。模型就算硬塞 stage_code 也不採用，
             # 原因見 SEARCH_TOOL 上方的說明。
-            content, hits = _run_search(query, stage_code, citations, wide)
+            content, hits, seen_only = _run_search(
+                query, stage_code, citations, wide)
             searches += 1
             found_relevant = found_relevant or hits > 0
             if hits:
@@ -705,21 +733,31 @@ def answer(question: str, history: list[dict] | None = None,
             yield {"type": "search", "query": query, "stage": stage_code,
                    "hits": hits}
 
-            # 撈到 0 段時**由程式再查一次**，不要交給模型決定。
+            seen_only_streak = seen_only_streak + 1 if seen_only else 0
+            if seen_only_streak >= 2:
+                exhausted = True
+
+            # 真的一段都沒撈到時，**由程式用使用者的原話再查一次**。
             #
-            # 工具回傳在 0 段時已經明講「請換不同的關鍵詞再查一次」，額度也還
-            # 剩兩次，但實測 4 次有 3 次模型收到之後直接回「知識庫中查無足夠
-            # 資訊」，一次都沒重試。這跟 `_is_relevant`、`_is_grounded` 是同一
-            # 個病根：**該由程式保證的事，不要寄望模型自律。**
+            # 為什麼需要：實測 4 次有 3 次，模型檢索 0 段後直接回「知識庫中查無
+            # 足夠資訊」——工具回傳已經明講「請換不同的關鍵詞再查一次」、額度
+            # 也還剩兩次，它一次都沒用。該由程式保證的事不要寄望模型自律。
             #
-            # 備選只用「使用者的原問題」與「補過主詞的版本」，不自行造新詞——
-            # 猜關鍵詞是模型的工作，這裡只負責把它漏掉的那一步補上。
-            if hits == 0 and searches < MAX_SEARCHES:
-                for candidate in (_resolve_follow_up(question, history), question):
-                    candidate = candidate.strip()
-                    if not candidate or candidate == query:
-                        continue
-                    retry, retry_hits = _run_search(
+            # 三個限制缺一不可，少任何一個都會變成上一版那種災難
+            # （六次檢索、106 秒、最後還是回查無資訊，比不重試更慢也更差）：
+            #
+            #   1. `not seen_only` —— 「有內容但前面給過了」也是 0 段，但那種
+            #      情況重試毫無意義，只是把同一批切片再撈一次。追問「還有嗎」
+            #      幾乎必然落在這一種。
+            #   2. `not auto_retried` —— 整輪只補救一次。原本寫成每一輪都能觸發，
+            #      於是 MAX_SEARCHES 形同虛設。
+            #   3. 只用使用者的原話當備選，不自行造新詞——猜關鍵詞是模型的工作。
+            if (hits == 0 and not seen_only and not auto_retried
+                    and searches < MAX_SEARCHES):
+                auto_retried = True
+                candidate = _resolve_follow_up(question, history).strip()
+                if candidate and candidate != query:
+                    retry, retry_hits, _ = _run_search(
                         candidate, stage_code, citations, wide)
                     searches += 1
                     yield {"type": "search", "query": candidate,
@@ -728,9 +766,6 @@ def answer(question: str, history: list[dict] | None = None,
                         content, hits = retry, retry_hits
                         found_relevant = True
                         searched_text.append(content)
-                        break
-                    if searches >= MAX_SEARCHES:
-                        break
 
             messages.append({"role": "tool", "content": content})
 
