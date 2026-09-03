@@ -89,6 +89,10 @@ def ask(body: AskBody, user: dict = Depends(current_user)) -> StreamingResponse:
                         "query": event["query"],
                         "stage": event["stage"],
                         "hits": event["hits"],
+                        # 0 段有兩種意思：真的沒撈到，或撈到了但前面已經給過。
+                        # 介面要分得出來，否則使用者看到一排「0 段」會以為
+                        # 知識庫裡沒東西——追問時後者才是常態。
+                        "seen_only": event.get("seen_only", False),
                     })
                 elif kind == "text":
                     yield _sse("text", {"piece": event["piece"]})

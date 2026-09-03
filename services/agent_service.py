@@ -523,7 +523,8 @@ def answer(question: str, history: list[dict] | None = None,
            stage_code: str | None = None, wide: bool = False):
     """執行一次問答。逐一 yield 事件字典：
 
-        {"type": "search", "query": str, "stage": str|None, "hits": int}
+        {"type": "search", "query": str, "stage": str|None, "hits": int,
+         "seen_only": bool}   hits=0 且 seen_only=True 代表「有撈到但前面已給過」
         {"type": "text", "piece": str}
         {"type": "error", "message": str}
         {"type": "done", "answer": str, "chunk_ids": [int], "searches": int}
@@ -640,14 +641,14 @@ def answer(question: str, history: list[dict] | None = None,
                 # 就什麼都不剩的句型，「今天午餐吃什麼」是完整問句、不在其中，
                 # 所以不會重蹈上面那個覆轍。差別在**無差別改寫 vs 窮舉的句型**。
                 query = _resolve_follow_up(question, history)
-                content, hits, _seen_only = _run_search(
+                content, hits, seen_only = _run_search(
                     query, stage_code, citations, wide)
                 searches += 1
                 found_relevant = found_relevant or hits > 0
                 if hits:
                     searched_text.append(content)
                 yield {"type": "search", "query": query, "stage": stage_code,
-                       "hits": hits}
+                       "hits": hits, "seen_only": seen_only}
                 # 檢索結果放在 user 訊息裡，不用 tool 訊息。
                 #
                 # `tool` 角色的訊息在對話模板中必須跟在帶 tool_calls 的 assistant
@@ -730,8 +731,11 @@ def answer(question: str, history: list[dict] | None = None,
             found_relevant = found_relevant or hits > 0
             if hits:
                 searched_text.append(content)
+            # `seen_only` 要送到前端。**0 段有兩種意思**，介面上分不出來的話，
+            # 使用者看到一排「0 段」只會以為知識庫裡沒東西——實際上多半是
+            # 「這些前面已經給過了」，那是正常且合理的結果。
             yield {"type": "search", "query": query, "stage": stage_code,
-                   "hits": hits}
+                   "hits": hits, "seen_only": seen_only}
 
             seen_only_streak = seen_only_streak + 1 if seen_only else 0
             if seen_only_streak >= 2:
@@ -761,7 +765,8 @@ def answer(question: str, history: list[dict] | None = None,
                         candidate, stage_code, citations, wide)
                     searches += 1
                     yield {"type": "search", "query": candidate,
-                           "stage": stage_code, "hits": retry_hits}
+                           "stage": stage_code, "hits": retry_hits,
+                           "seen_only": False}
                     if retry_hits:
                         content, hits = retry, retry_hits
                         found_relevant = True

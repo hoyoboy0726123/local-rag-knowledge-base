@@ -213,13 +213,27 @@
 .msg .qtext { padding-top: 3px; font-size: 14.5px; font-weight: 550; }
 .abody { min-width: 0; flex: 1; }
 
+/* 檢索軌跡膠囊。
+   問題出在 flex 預設會讓每個子元素都可以縮：query 一長，「◐ 檢索」被壓成
+   兩行、「· 0 段」也被擠斷。標籤與段數是固定文字，本來就不該參與收縮，
+   要縮的只有 query 一個。 */
 .trace {
-  display: inline-flex; align-items: center; gap: 7px; background: var(--surface);
+  display: inline-flex; align-items: baseline; gap: 7px; background: var(--surface);
   border: 1px solid var(--line); border-radius: 99px; padding: 3.5px 11px 3.5px 8px;
   font-size: 11.5px; color: var(--ink-2); margin-bottom: 11px; margin-right: 6px;
+  max-width: 100%; vertical-align: top;
 }
+.trace .k, .trace b, .trace .st { flex: 0 0 auto; white-space: nowrap; }
 .trace .k { color: var(--accent); font-weight: 600; }
 .trace b { font-weight: 600; color: var(--ink); }
+/* 0 段不是錯誤，只是這次沒有新內容——用弱化的顏色，不要讓它看起來像警告 */
+.trace b.zero { color: var(--ink-3); font-weight: 500; }
+/* 唯一允許收縮的元素。模型偶爾會送出兩百字的關鍵詞串，攤開會把答案擠出畫面；
+   單行省略，完整內容在 title 裡。 */
+.trace .q {
+  flex: 0 1 auto; min-width: 0; max-width: 42ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .ans { color: var(--ink-2); }
 .ans h1, .ans h2, .ans h3, .ans h4 { font-size: 13px; font-weight: 650; margin: 15px 0 6px; color: var(--ink); }

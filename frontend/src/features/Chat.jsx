@@ -61,6 +61,31 @@ function stripLatex(text) {
   )
 }
 
+/* 一次檢索的軌跡膠囊。問答進行中與歷史訊息共用同一個元件——
+   兩邊各寫一次的下場是改了一邊忘了另一邊。
+
+   **「0 段」有兩種意思，一定要分開講。** 一種是真的沒撈到，另一種是
+   「撈到了但這一輪前面已經給過」——後者在追問時是常態，畫面上若都顯示
+   「0 段」，使用者只會以為知識庫裡沒東西。
+
+   query 用單行省略：模型有時會產生兩百字的關鍵詞串（實測看過整張分類表被
+   當成 query 送出），完整攤開會讓膠囊撐成一大塊，把答案擠到畫面外。
+   完整內容留在 title，滑過去看得到。 */
+function Trace({ search }) {
+  const { query, stage, hits, seen_only: seenOnly } = search
+  const count = hits > 0
+    ? `${hits} 段`
+    : (seenOnly ? '0 段（前面已提供）' : '0 段')
+  return (
+    <div className="trace" title={query}>
+      <span className="k">◐ 檢索</span>
+      <span className="q">{query}</span>
+      {stage && <span className="st">（{stage}）</span>}
+      <b className={hits > 0 ? '' : 'zero'}>· {count}</b>
+    </div>
+  )
+}
+
 function Answer({ text, onCite }) {
   return (
     <div className="ans">
@@ -350,11 +375,7 @@ export default function Chat() {
                 <div className="av ai">◈</div>
                 <div className="abody">
                   {(m.searches || []).map((s, j) => (
-                    <div className="trace" key={j}>
-                      <span className="k">◐ 檢索</span>{s.query}
-                      {s.stage && <span>（{s.stage}）</span>}
-                      <b>· {s.hits} 段</b>
-                    </div>
+                    <Trace search={s} key={j} />
                   ))}
                   <Answer text={m.content} onCite={gotoCite} />
                   {/* 答案不完整時的補救。用前一則使用者訊息當問題重問，
@@ -418,9 +439,7 @@ export default function Chat() {
                 <div className="av ai">◈</div>
                 <div className="abody">
                   {live.searches.map((s, j) => (
-                    <div className="trace" key={j}>
-                      <span className="k">◐ 檢索</span>{s.query}<b>· {s.hits} 段</b>
-                    </div>
+                    <Trace search={s} key={j} />
                   ))}
                   {live.text
                     ? <Answer text={live.text} onCite={() => {}} />
