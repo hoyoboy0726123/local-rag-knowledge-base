@@ -272,6 +272,50 @@ def _history_messages(history: list[dict] | None) -> list[dict]:
     return messages
 
 
+# 明顯依賴前文、單獨看沒有主題的追問句。
+#
+# **為什麼是窮舉，不是長度也不是模型判斷：**
+#   * 長度不行——「今天午餐吃什麼」只有 7 個字，卻是一個完整的問題。
+#   * 模型判斷不行——見下方 `_run_search` 呼叫處的教訓：曾經無差別呼叫
+#     `condense_question()`，把離題但完整的問題按前文改寫，結果一個合法的
+#     拒答被改成答非所問。
+#
+# 所以只認「拿掉前文就什麼都不剩」的句型。寧可漏接（模型多半自己會補），
+# 也不要誤判——誤判的代價是把使用者問的東西換掉，比沒改寫嚴重得多。
+_FOLLOW_UP = re.compile(
+    r"^(還有(呢|嗎|其他的?|別的)?"
+    r"|其他的?呢?|別的呢?"
+    r"|繼續(說)?|再說|再多說[一點些]*"
+    r"|更多|多一點|詳細(說明|一點)?[說明]*"
+    r"|然後呢?|接下來呢?|後來呢?"
+    r")[？?。！!、,，\s]*$"
+)
+
+
+def _resolve_follow_up(query: str, history: list[dict] | None) -> str:
+    """把「還有嗎」這種追問補回前一個有主題的問題。
+
+    **這是程式層防線，不是提示詞。** 系統指示第 1 條已經要求模型自己補主詞，
+    但那條要跟另外二十幾條競爭注意力，實測 8 次有 3 次直接把「還有嗎」原封不動
+    送去檢索，撈到 0 段，然後回「知識庫中查無足夠資訊」——使用者看到的是
+    知識庫沒東西，實際上只是問錯了。這跟 `_is_relevant` 要解決的是同一類問題：
+    會被忽略的規則就不該只寫在提示詞裡。
+
+    只在 query 本身是純追問時才動作；補回去的是**使用者上一個實質問題的原話**，
+    不做任何推測性的改寫。
+    """
+    if not history or not _FOLLOW_UP.match(query.strip()):
+        return query
+    for record in reversed(history):
+        if record.get("role") != "user":
+            continue
+        previous = (record.get("content") or "").strip()
+        # 上一句自己也是追問就再往前找，否則會補成「還有嗎 還有嗎」
+        if previous and not _FOLLOW_UP.match(previous):
+            return previous
+    return query
+
+
 class _Citations:
     """跨多次檢索維持穩定的來源編號。
 
@@ -490,16 +534,19 @@ def answer(question: str, history: list[dict] | None = None,
                 # 催過還是不查，就別再指望它了 —— 自己查，把結果塞回去。
                 # 「答案必須有依據」是這個系統的存在前提，不能交給模型自律。
                 #
-                # **這裡刻意用原始問題，不做依前文的改寫。**
+                # **這裡不做無差別的依前文改寫。**
                 # 曾經在這裡呼叫 condense_question()，結果是：使用者問「今天午餐吃什麼」，
                 # 模型本來已經正確拒答，卻因為前文在談 PVT，
                 # 改寫把問題變成「PVT 階段的產出物」，查回一堆 PVT 內容，
                 # 模型就照著答了——一個合法的拒答被硬生生變成答非所問。
                 #
                 # 走到這一步代表模型已經不配合，此時再加一層猜測只會放大錯誤。
-                # 用原始問題最壞的情況是查不到而回「查無資訊」，方向是安全的。
-                content, hits = _run_search(question, stage_code, citations, wide)
-                query = question
+                #
+                # 唯一的例外是 `_resolve_follow_up`：它只認「還有嗎」這種拿掉前文
+                # 就什麼都不剩的句型，「今天午餐吃什麼」是完整問句、不在其中，
+                # 所以不會重蹈上面那個覆轍。差別在**無差別改寫 vs 窮舉的句型**。
+                query = _resolve_follow_up(question, history)
+                content, hits = _run_search(query, stage_code, citations, wide)
                 searches += 1
                 found_relevant = found_relevant or hits > 0
                 if hits:
@@ -577,6 +624,9 @@ def answer(question: str, history: list[dict] | None = None,
                     arguments = {}
 
             query = (arguments.get("query") or question).strip()
+            # 模型該自己把「還有嗎」補成有主題的 query，但實測 8 次有 3 次沒做。
+            # 這一行是程式層的補救，只對純追問句生效，理由見 `_resolve_follow_up`。
+            query = _resolve_follow_up(query, history)
             # 檢索範圍只認 UI 上的選擇。模型就算硬塞 stage_code 也不採用，
             # 原因見 SEARCH_TOOL 上方的說明。
             content, hits = _run_search(query, stage_code, citations, wide)

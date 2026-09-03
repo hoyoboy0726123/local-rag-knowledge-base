@@ -70,6 +70,7 @@ def sse(path: str, token: str, body: dict) -> dict:
     req.add_header("Content-Type", "application/json")
 
     events, texts, done = [], 0, None
+    queries = []
     name = None
     with urllib.request.urlopen(req, timeout=300) as resp:
         for raw in resp:
@@ -81,9 +82,11 @@ def sse(path: str, token: str, body: dict) -> dict:
                 payload = json.loads(line[6:])
                 if name == "text":
                     texts += 1
+                elif name == "search":
+                    queries.append(payload.get("query", ""))
                 elif name == "done":
                     done = payload
-    return {"events": events, "texts": texts, "done": done}
+    return {"events": events, "texts": texts, "done": done, "queries": queries}
 
 
 print("\n=== 1. 服務可用性 ===")
@@ -154,6 +157,13 @@ check("done 是最後一個事件", result["events"][-1] == "done", str(result["
 # 追問：語意全在前文裡，必須實際再檢索一次
 follow = sse("/api/chat/ask", USER, {"session_id": sid, "question": "還有嗎"})
 check("追問也會實際檢索", "search" in follow["events"], str(follow["events"]))
+# **只驗「有沒有 search 事件」是不夠的。** 這條斷言原本就是那樣寫的，於是漏掉了
+# 一個真的 bug：模型有呼叫工具，卻把「還有嗎」原封不動當成 query 送出去，
+# 撈到 0 段後回「知識庫中查無足夠資訊」。實測 8 次有 3 次如此——
+# 使用者看到的是知識庫沒東西，實際上只是問錯了。所以要驗送出去的 query。
+check("追問會補回主題，不是把「還有嗎」直接送去檢索",
+      bool(follow["queries"]) and all(q.strip() != "還有嗎" for q in follow["queries"]),
+      str(follow["queries"]))
 
 # 無關問題必須被拒答——這是防幻覺的最終防線。
 #
@@ -539,6 +549,42 @@ check("每個廠商名稱都完整保留",
 _long = "衝擊測試" * 400
 check("無換行長句仍會被切開",
       all(len(c["content"]) <= 200 for c in chunk_text(_long, 200, 40, "x.md")))
+
+# ----------------------------------------------------------------- 追問補主詞
+#
+# 系統指示第 1 條要求模型自己把「還有嗎」補成有主題的 query，但那條要跟另外
+# 二十幾條競爭注意力，實測 8 次有 3 次沒做。這組測試守的是程式層的補救。
+#
+# **誤判比漏接嚴重得多**，所以「不該改寫的不能被改寫」那幾項才是重點：
+# agent_service 裡留有教訓——曾經無差別呼叫 condense_question()，
+# 使用者問「今天午餐吃什麼」被按前文改寫成「PVT 階段的產出物」，
+# 一個合法的拒答變成答非所問。
+from services.agent_service import _resolve_follow_up  # noqa: E402
+
+HIST = [
+    {"role": "user", "content": "料件有哪些種類"},
+    {"role": "assistant", "content": "料件可分為 01 CPU、02 CHIPSET 等大類。"},
+]
+for _q in ["還有嗎", "還有呢", "還有其他的", "其他呢", "繼續", "再多說一點",
+           "更多", "然後呢", "接下來呢", "還有嗎？"]:
+    check(f"追問補回主題：{_q}", _resolve_follow_up(_q, HIST) == "料件有哪些種類",
+          _resolve_follow_up(_q, HIST))
+
+# 完整的問句一律不動，即使它很短、即使它離題
+for _q in ["今天午餐吃什麼", "請假流程是什麼", "料件有哪些種類", "壓力測試的條件"]:
+    check(f"完整問句不被改寫：{_q}", _resolve_follow_up(_q, HIST) == _q,
+          _resolve_follow_up(_q, HIST))
+
+check("沒有前文時原樣返回", _resolve_follow_up("還有嗎", None) == "還有嗎")
+check("前文只有追問時不會補成追問",
+      _resolve_follow_up("還有嗎", [{"role": "user", "content": "還有嗎"}]) == "還有嗎")
+# 連續追問要一路往前找到真正有主題的那一句
+_chain = HIST + [{"role": "user", "content": "還有嗎"},
+                 {"role": "assistant", "content": "還有 03 MEMORY。"}]
+check("連續追問往前找到有主題的問題",
+      _resolve_follow_up("還有嗎", _chain) == "料件有哪些種類",
+      _resolve_follow_up("還有嗎", _chain))
+
 
 # ----------------------------------------------------------------- VLM 省略偵測
 #
