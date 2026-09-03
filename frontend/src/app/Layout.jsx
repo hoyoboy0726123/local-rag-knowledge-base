@@ -7,7 +7,7 @@ import { api, clearToken } from './api'
    獨立成一頁只能「看」不能「續」，那是把紀錄當成報表在做。 */
 const WORK = [
   { to: '/chat', icon: '◈', label: 'AI 問答' },
-  { to: '/stages', icon: '◱', label: '階段導覽' },
+  { to: '/kbs', icon: '◱', label: '知識庫' },
   { to: '/profile', icon: '⚙', label: '個人設定' },
 ]
 const ADMIN = [

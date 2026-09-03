@@ -57,7 +57,7 @@ class RetrievedChunk:
     locator: str
     file_name: str
     file_path: str
-    stage_code: str | None
+    kb: str | None
     distance: float
     # 重排序分數（越大越相關）。沒啟用重排序時是 None。
     #
@@ -68,7 +68,7 @@ class RetrievedChunk:
     rerank_score: float | None = None
 
 
-def retrieve(query: str, stage_code: str | None = None, top_k: int | None = None) -> tuple[list[RetrievedChunk], str]:
+def retrieve(query: str, kbs: list[str] | None = None, top_k: int | None = None) -> tuple[list[RetrievedChunk], str]:
     """語意檢索。回傳 (切片清單, 錯誤訊息)。"""
     if not query.strip():
         return [], "查詢內容為空"
@@ -84,10 +84,10 @@ def retrieve(query: str, stage_code: str | None = None, top_k: int | None = None
     conn = raw_connection()
     try:
         # sqlite-vec 的 KNN 需要先取一批候選，再以 SQL 條件過濾
-        limit = (top_k * 8 if stage_code else top_k * 2) + reranker.MAX_CANDIDATES
+        limit = (top_k * 8 if kbs else top_k * 2) + reranker.MAX_CANDIDATES
         sql = """
             SELECT v.chunk_id, v.distance, c.doc_id, c.content, c.locator,
-                   d.file_name, d.file_path, d.stage_code, c.seq
+                   d.file_name, d.file_path, d.kb, c.seq
             FROM (
                 SELECT chunk_id, distance FROM vec_chunks
                 WHERE embedding MATCH ? ORDER BY distance LIMIT ?
@@ -96,9 +96,19 @@ def retrieve(query: str, stage_code: str | None = None, top_k: int | None = None
             JOIN documents d ON d.id = c.doc_id
         """
         params: list = [serialize(vectors[0]), limit]
-        if stage_code:
-            sql += " WHERE d.stage_code = ?"
-            params.append(stage_code)
+        # 檢索範圍：知識庫名稱的集合；空字串代表「通用」（根目錄檔案，kb 為 NULL）。
+        # None 或空清單 = 全部。多選在 SQL 上只是 = 變 IN，加一個 IS NULL 分支。
+        if kbs:
+            named = [k for k in kbs if k]
+            clauses, extra = [], []
+            if named:
+                clauses.append(f"d.kb IN ({','.join('?' * len(named))})")
+                extra.extend(named)
+            if any(k == "" for k in kbs):
+                clauses.append("d.kb IS NULL")
+            if clauses:
+                sql += " WHERE (" + " OR ".join(clauses) + ")"
+                params.extend(extra)
         # 有重排序時多撈候選讓它排——只給它 top_k 段就沒有東西可以重排了。
         # 實測那題真正要的切片原本排第 26，只撈 6 段根本看不到它。
         want = top_k
@@ -118,7 +128,7 @@ def retrieve(query: str, stage_code: str | None = None, top_k: int | None = None
     results = [
         RetrievedChunk(
             chunk_id=r[0], distance=r[1], doc_id=r[2], content=r[3],
-            locator=r[4], file_name=r[5], file_path=r[6], stage_code=r[7],
+            locator=r[4], file_name=r[5], file_path=r[6], kb=r[7],
             seq=r[8],
         )
         for r in rows
@@ -299,7 +309,7 @@ class ContextBlock:
     """
 
     file_name: str
-    stage_code: str | None
+    kb: str | None
     locator: str
     indices: list[int]   # 這個區段涵蓋的引註編號（沿用檢索順序）
     segments: list[tuple[int | None, str, str]]
@@ -469,7 +479,7 @@ def build_context_blocks(chunks: list[RetrievedChunk], wide: bool = False,
             blocks.append(
                 ContextBlock(
                     file_name=members[0].file_name,
-                    stage_code=members[0].stage_code,
+                    kb=members[0].kb,
                     locator=members[0].locator,
                     indices=sorted(index_of[m.chunk_id] for m in members),
                     segments=segments,
@@ -511,8 +521,8 @@ def build_prompt(
 
     sections = []
     for file_name, items in grouped.items():
-        stage = items[0].stage_code
-        header = f"### 文件：{file_name}" + (f"（{stage} 階段）" if stage else "")
+        kb = items[0].kb
+        header = f"### 文件：{file_name}" + (f"（知識庫：{kb}）" if kb else "")
         body = []
         for b in items:
             for chunk_id, locator, text in b.segments:
@@ -562,7 +572,7 @@ def answer_stream(
         yield apply_blocklist(piece)
 
 
-def keyword_search(keyword: str, stage_code: str | None = None, limit: int = 30) -> pd.DataFrame:
+def keyword_search(keyword: str, kb: str | None = None, limit: int = 30) -> pd.DataFrame:
     """關鍵字搜尋。Ollama 未啟動時的備援查詢路徑。"""
     if not keyword.strip():
         return pd.DataFrame()
@@ -573,15 +583,15 @@ def keyword_search(keyword: str, stage_code: str | None = None, limit: int = 30)
             .join(Document, Chunk.doc_id == Document.id)
             .filter(Chunk.content.like(f"%{keyword.strip()}%"))
         )
-        if stage_code:
-            query = query.filter(Document.stage_code == stage_code)
+        if kb:
+            query = query.filter(Document.kb == kb)
         rows = query.limit(limit).all()
 
     return pd.DataFrame(
         [
             {
                 "文件": doc.file_name,
-                "階段": doc.stage_code or "-",
+                "階段": doc.kb or "-",
                 "位置": chunk.locator,
                 "內容片段": chunk.content[:200] + ("..." if len(chunk.content) > 200 else ""),
             }

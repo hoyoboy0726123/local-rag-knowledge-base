@@ -81,7 +81,7 @@ FastAPI  ── /api/*        REST + SSE 串流
       │
       ├── services/        ★ 自 V1 複製，僅 auth_service 去除 Streamlit 相依
       │     agent_service / rag_service / ingest_service
-      │     ollama_client / auth_service / chat_service / stage_service
+      │     ollama_client / auth_service / chat_service / kb_service
       ▼
 SQLite (knowledge.db) + sqlite-vec ──► Ollama (127.0.0.1:11434)
 ```
@@ -109,7 +109,7 @@ v2/
     api/
       auth.py        登入、JWT、current_user 依賴注入
       chat.py        問答（SSE 串流）、對話紀錄
-      stages.py      階段導覽、文件閱讀與下載
+      kbs.py         知識庫清單、文件閱讀與下載
       admin.py       索引、切片、關鍵字、模型設定、帳號
     deps.py          共用依賴（require_login / require_admin）
   frontend/
@@ -332,7 +332,7 @@ V1 的經驗是這個狀態必須隨時看得到，否則使用者不知道為�
 
 | 頁面 | 重點 |
 |---|---|
-| 階段導覽 | 六階段時間軸；**共通文件另開一區**（V1 §5.3 的教訓：未歸屬階段的文件會沒有入口） |
+| 知識庫 | 使用者自訂的分類：一個知識庫 = 根目錄下的一個子資料夾，根目錄檔案 = 「通用」（永遠有入口）。管理員可新建／改名／刪除（空的才行）、把文件搬到別的知識庫；搬移不重新向量化 |
 | 文件庫 | 全部文件列表 + 線上閱讀 + 下載（**不可用 `os.startfile`**） |
 | 模型與設定 | 模型選擇 + 工具調用能力判定 + VLM 自檢按鈕 |
 | 帳號管理 | 建立、停用、重設密碼 |
@@ -379,9 +379,12 @@ event: done     data: {"answer":"…","chunk_ids":[12,7,3],"searches":1}
 
 | 方法 | 路徑 | 說明 |
 |---|---|---|
-| GET | `/api/stages` | 六階段 + 文件數 + 索引統計 |
-| GET | `/api/stages/{code}/documents` | 該階段文件 |
-| GET | `/api/documents/unclassified` | **共通文件** |
+| GET | `/api/kbs` | 知識庫清單（通用永遠第一）+ 各庫文件數 + 索引統計 |
+| GET | `/api/kbs/documents?kb=` | 該知識庫文件；`kb=`（空）是通用，不帶參數是全部 |
+| POST | `/api/admin/kbs` | 新建知識庫（建子資料夾） |
+| PUT | `/api/admin/kbs/{name}` | 改名，同步資料庫路徑，不重新索引 |
+| DELETE | `/api/admin/kbs/{name}` | 刪除，**只限空的** |
+| POST | `/api/admin/documents/move` | 搬移文件到另一知識庫（或通用），不重新向量化 |
 | GET | `/api/documents/content?path=` | 線上閱讀（Markdown） |
 | GET | `/api/documents/download?path=` | 下載原始檔 |
 | POST | `/api/admin/index` | 觸發索引 |
@@ -441,11 +444,11 @@ V1 的界線一字不改，只是換一種傳遞方式：
 | 階段 | 內容 | 驗收 |
 |---|---|---|
 | 1 | FastAPI 骨架 + JWT 認證 | `/docs` 可開；未帶 token 回 401 |
-| 2 | 沿用 `services/` 並包成 API | 以 curl 打 `/api/stages` 拿到六階段 |
+| 2 | 沿用 `services/` 並包成 API | 以 curl 打 `/api/kbs` 拿到知識庫清單 |
 | 3 | **SSE 問答** | 事件依序抵達；追問可用；無關問題被拒答 |
 | 4 | 設計 token + 版面骨架 | 側邊欄依角色顯示；**可收折成圖示列且狀態記得住**；色彩全部來自 `tokens.css` |
 | 5 | 問答頁 | 引註可點並高亮來源；串流逐字；**來源展得開也看得到全文**；左欄可接續舊對話；空對話不會被建出來 |
-| 6 | 階段導覽 + 文件閱讀 | 表格正確渲染；共通文件有入口；可下載 |
+| 6 | 知識庫頁 + 文件閱讀 | 表格正確渲染；通用有入口；可下載、可搬移 |
 | 7 | 管理端 | 切片三欄工作台；關鍵字編輯後距離改變 |
 | 8 | 前端建置 + `start.bat` | 一鍵啟動；單一行程；純 ASCII 批次檔 |
 | 9 | 測試 | 後端沿用 V1 測試；新增 API 層測試 |
@@ -577,7 +580,7 @@ V2 的 `knowledge.db` 是從 V1 複製過來的，但 `documents.file_path` 存�
 
 症狀很隱蔽：問答完全正常（切片內容存在資料庫裡），但
 
-* 階段導覽的「線上閱讀」實際上讀的是 V1 的檔案
+* 知識庫頁的「線上閱讀」實際上讀的是 V1 的檔案
 * V1 資料夾一旦刪除或搬移，V2 就壞
 * 任何「以磁碟檔案比對資料表」的功能都會全部對不上
 

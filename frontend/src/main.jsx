@@ -7,7 +7,7 @@ import { api, getToken } from './app/api'
 import Layout from './app/Layout'
 import Login from './features/Login'
 import Chat from './features/Chat'
-import Stages from './features/Stages'
+import KnowledgeBases from './features/KnowledgeBases'
 import Profile from './features/Profile'
 import Library from './features/Library'
 import Models from './features/Models'
@@ -30,7 +30,7 @@ function App() {
     <Routes>
       <Route element={<Layout user={user} onLogout={() => setUser(null)} />}>
         <Route path="/chat" element={<Chat />} />
-        <Route path="/stages" element={<Stages />} />
+        <Route path="/kbs" element={<KnowledgeBases />} />
         {/* 舊的 /history 網址由下方的 * 導回 /chat——對話紀錄已併入問答頁 */}
         <Route path="/profile" element={<Profile user={user} />} />
         {/* 管理路由只在管理員登入時掛載。

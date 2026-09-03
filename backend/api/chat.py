@@ -21,7 +21,8 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 class AskBody(BaseModel):
     session_id: int
     question: str
-    stage_code: str | None = None
+    # 檢索範圍：知識庫名稱的集合；空字串代表「通用」；None／空清單＝全部
+    kbs: list[str] | None = None
     # 使用者對答案不滿意時可勾選，改用整個結構單元當脈絡重問一次
     wide: bool = False
 
@@ -81,13 +82,13 @@ def ask(body: AskBody, user: dict = Depends(current_user)) -> StreamingResponse:
     def stream():
         answer, chunk_ids = "", []
         try:
-            for event in agent_service.answer(body.question, history, body.stage_code,
+            for event in agent_service.answer(body.question, history, body.kbs or None,
                                               body.wide):
                 kind = event["type"]
                 if kind == "search":
                     yield _sse("search", {
                         "query": event["query"],
-                        "stage": event["stage"],
+                        "kbs": event.get("kbs"),
                         "hits": event["hits"],
                         # 0 段有兩種意思：真的沒撈到，或撈到了但前面已經給過。
                         # 介面要分得出來，否則使用者看到一排「0 段」會以為

@@ -71,7 +71,7 @@ HISTORY_ANSWER_CHARS = 400
 
 # 這個工具**不提供限定階段的參數**，檢索範圍完全由 UI 上的選擇決定。
 #
-# 原本有一個 `stage_code`，描述寫明「不確定就不要填」。但那是靠模型自律，
+# 原本有一個 `kbs`，描述寫明「不確定就不要填」。但那是靠模型自律，
 # 而模型不一定會照做：實測 qwen3:8b 三次呼叫全部自行填入 `Concept`，
 # 包含問題裡完全沒提到階段的時候。
 #
@@ -378,7 +378,7 @@ class _Citations:
         return sorted(self._index, key=self._index.get)
 
 
-def _run_search(query: str, stage_code: str | None, citations: _Citations,
+def _run_search(query: str, kbs: str | None, citations: _Citations,
                 wide: bool = False) -> tuple[str, int, bool]:
     """執行檢索並排版成模型讀得懂的文字。回傳 (內容, 新增命中數, 是否都給過了)。
 
@@ -391,7 +391,7 @@ def _run_search(query: str, stage_code: str | None, citations: _Citations,
     於是自動重試機制一輪一輪地重查，六次檢索、106 秒，最後還是回
     「查無足夠資訊」——比不重試更慢也更差。
     """
-    chunks, error = rag_service.retrieve(query, stage_code)
+    chunks, error = rag_service.retrieve(query, kbs)
     if error:
         return f"檢索失敗：{error}", 0, False
     if not chunks:
@@ -432,7 +432,7 @@ def _run_search(query: str, stage_code: str | None, citations: _Citations,
 
     sections = []
     for file_name, items in grouped.items():
-        stage = f"（{items[0].stage_code} 階段）" if items[0].stage_code else ""
+        kb_tag = f"（知識庫：{items[0].kb}）" if items[0].kb else ""
 
         # 文件底下再依**章節**分組。
         #
@@ -463,7 +463,7 @@ def _run_search(query: str, stage_code: str | None, citations: _Citations,
             chunks_of_section.append(head + "\n\n".join(body_parts))
 
         sections.append(
-            f"### 文件：{file_name}{stage}\n\n" + "\n\n".join(chunks_of_section)
+            f"### 文件：{file_name}{kb_tag}\n\n" + "\n\n".join(chunks_of_section)
         )
     body = "\n\n---\n\n".join(sections)
 
@@ -530,13 +530,13 @@ SECTION_SYSTEM = (
 )
 
 
-def _answer_by_section(question: str, stage_code: str | None, citations: _Citations):
+def _answer_by_section(question: str, kbs: str | None, citations: _Citations):
     """列舉型問題：依章節拆開、一節問一次、程式負責組裝。
 
     **這保證的是「檢索到的章節都會被列出」，不是「知識庫裡所有的都會被列出」**——
     後者取決於檢索，程式無法保證，所以結尾會誠實說明涵蓋範圍。
     """
-    chunks, error = rag_service.retrieve(question, stage_code, top_k=SECTION_TOP_K)
+    chunks, error = rag_service.retrieve(question, kbs, top_k=SECTION_TOP_K)
     if error:
         yield {"type": "error", "message": f"檢索失敗：{error}"}
         return
@@ -547,7 +547,7 @@ def _answer_by_section(question: str, stage_code: str | None, citations: _Citati
 
     for chunk in chunks:
         citations.number(chunk.chunk_id)
-    yield {"type": "search", "query": question, "stage": stage_code,
+    yield {"type": "search", "query": question, "kbs": kbs,
            "hits": len(chunks), "seen_only": False}
 
     groups: dict[tuple[str, str], list] = {}
@@ -593,16 +593,16 @@ def _answer_by_section(question: str, stage_code: str | None, citations: _Citati
 
 
 def answer(question: str, history: list[dict] | None = None,
-           stage_code: str | None = None, wide: bool = False):
+           kbs: str | None = None, wide: bool = False):
     """執行一次問答。逐一 yield 事件字典：
 
-        {"type": "search", "query": str, "stage": str|None, "hits": int,
+        {"type": "search", "query": str, "kbs": list[str]|None, "hits": int,
          "seen_only": bool}   hits=0 且 seen_only=True 代表「有撈到但前面已給過」
         {"type": "text", "piece": str}
         {"type": "error", "message": str}
         {"type": "done", "answer": str, "chunk_ids": [int], "searches": int}
 
-    `stage_code` 是 UI 上選定的檢索範圍，也是**唯一**的範圍來源——
+    `kbs` 是 UI 上勾選的知識庫集合（None＝全部），也是**唯一**的範圍來源——
     縮小檢索範圍是使用者的決定，模型無權代勞（見 SEARCH_TOOL 的說明）。
     """
     citations = _Citations()
@@ -611,7 +611,7 @@ def answer(question: str, history: list[dict] | None = None,
     if get_setting("section_answer", "0") == "1":
         resolved = _resolve_follow_up(question, history)
         if _is_enumeration(resolved):
-            yield from _answer_by_section(resolved, stage_code, citations)
+            yield from _answer_by_section(resolved, kbs, citations)
             return
     messages = (
         [{"role": "system", "content": SYSTEM_INSTRUCTION}]
@@ -722,12 +722,12 @@ def answer(question: str, history: list[dict] | None = None,
                 # 所以不會重蹈上面那個覆轍。差別在**無差別改寫 vs 窮舉的句型**。
                 query = _resolve_follow_up(question, history)
                 content, hits, seen_only = _run_search(
-                    query, stage_code, citations, wide)
+                    query, kbs, citations, wide)
                 searches += 1
                 found_relevant = found_relevant or hits > 0
                 if hits:
                     searched_text.append(content)
-                yield {"type": "search", "query": query, "stage": stage_code,
+                yield {"type": "search", "query": query, "kbs": kbs,
                        "hits": hits, "seen_only": seen_only}
                 # 檢索結果放在 user 訊息裡，不用 tool 訊息。
                 #
@@ -803,10 +803,10 @@ def answer(question: str, history: list[dict] | None = None,
             # 模型該自己把「還有嗎」補成有主題的 query，但實測 8 次有 3 次沒做。
             # 這一行是程式層的補救，只對純追問句生效，理由見 `_resolve_follow_up`。
             query = _resolve_follow_up(query, history)
-            # 檢索範圍只認 UI 上的選擇。模型就算硬塞 stage_code 也不採用，
+            # 檢索範圍只認 UI 上的選擇。模型就算硬塞 kbs 也不採用，
             # 原因見 SEARCH_TOOL 上方的說明。
             content, hits, seen_only = _run_search(
-                query, stage_code, citations, wide)
+                query, kbs, citations, wide)
             searches += 1
             found_relevant = found_relevant or hits > 0
             if hits:
@@ -814,7 +814,7 @@ def answer(question: str, history: list[dict] | None = None,
             # `seen_only` 要送到前端。**0 段有兩種意思**，介面上分不出來的話，
             # 使用者看到一排「0 段」只會以為知識庫裡沒東西——實際上多半是
             # 「這些前面已經給過了」，那是正常且合理的結果。
-            yield {"type": "search", "query": query, "stage": stage_code,
+            yield {"type": "search", "query": query, "kbs": kbs,
                    "hits": hits, "seen_only": seen_only}
 
             seen_only_streak = seen_only_streak + 1 if seen_only else 0
@@ -842,10 +842,10 @@ def answer(question: str, history: list[dict] | None = None,
                 candidate = _resolve_follow_up(question, history).strip()
                 if candidate and candidate != query:
                     retry, retry_hits, _ = _run_search(
-                        candidate, stage_code, citations, wide)
+                        candidate, kbs, citations, wide)
                     searches += 1
                     yield {"type": "search", "query": candidate,
-                           "stage": stage_code, "hits": retry_hits,
+                           "kbs": kbs, "hits": retry_hits,
                            "seen_only": False}
                     if retry_hits:
                         content, hits = retry, retry_hits

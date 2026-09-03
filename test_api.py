@@ -99,7 +99,7 @@ check("health 端點正常", health.get("status") == "ok", str(health))
 check("首頁提供前端靜態檔", call("/")[0] == 200)
 
 print("\n=== 2. 認證 ===")
-check("未帶 token 一律 401", call("/api/stages")[0] == 401)
+check("未帶 token 一律 401", call("/api/kbs")[0] == 401)
 check("錯誤密碼回 401",
       call("/api/auth/login", method="POST",
            body={"username": "admin", "password": "wrong"})[0] == 401)
@@ -124,14 +124,17 @@ check("一般使用者不能改模型設定",
       call("/api/admin/models", USER, "PUT", {"llm_model": "x"})[0] == 403)
 
 print("\n=== 4. 資料端點 ===")
-status, data = call("/api/stages", USER)
-check("六個階段", len(data.get("stages", [])) == 6, str(len(data.get("stages", []))))
+# 知識庫 = 根目錄下的子資料夾，由使用者自訂；「通用」是根目錄的檔案，永遠排第一。
+# 測試不假設有哪些知識庫（那是使用者的資料夾），只驗結構。
+status, data = call("/api/kbs", USER)
+_kbs = data.get("kbs", [])
+check("知識庫清單第一個是「通用」", bool(_kbs) and _kbs[0]["is_general"] and _kbs[0]["name"] == "", str(_kbs[:1]))
+check("每個知識庫都帶文件數", all("doc_count" in k for k in _kbs))
 check("有索引統計", data.get("stats", {}).get("documents", 0) > 0, str(data.get("stats")))
 
-# 時間軸只有六階段，未歸屬的文件沒有這個端點就完全沒有入口
-status, data = call("/api/documents/unclassified", USER)
-check("共通文件端點可用（未歸屬階段的文件才有入口）",
-      status == 200 and isinstance(data.get("documents"), list))
+# 通用知識庫的文件要有入口——它們往往是最基礎的跨領域文件
+status, data = call("/api/kbs/documents?kb=", USER)
+check("通用知識庫的文件端點可用", status == 200 and isinstance(data.get("documents"), list))
 
 print("\n=== 5. SSE 串流問答 ===")
 # **問句與斷言都不綁定任何特定內容。**
@@ -325,7 +328,7 @@ check("index-status 帶支援格式清單",
 print("\n=== 9. 上傳 ===")
 
 
-def upload(fname: str, content: bytes, stage: str = "Concept"):
+def upload(fname: str, content: bytes, kb: str | None = None, new_kb: str | None = None):
     """模擬瀏覽器的 multipart 上傳。
 
     **這一段非測不可。** `save_uploads()` 是從 V1 原封複製的，
@@ -339,7 +342,8 @@ def upload(fname: str, content: bytes, stage: str = "Concept"):
         f'--{bd}\r\nContent-Disposition: form-data; name="files"; filename="{fname}"\r\n\r\n'
     ).encode() + content + f"\r\n--{bd}--\r\n".encode()
     req = urllib.request.Request(
-        f"{BASE}/api/admin/upload?stage_code={stage}", data=body, method="POST")
+        f"{BASE}/api/admin/upload?{urllib.parse.urlencode({k: v for k, v in (('kb', kb), ('new_kb', new_kb)) if v})}",
+        data=body, method="POST")
     req.add_header("Authorization", f"Bearer {ADMIN}")
     req.add_header("Content-Type", f"multipart/form-data; boundary={bd}")
     try:
@@ -352,7 +356,8 @@ def upload(fname: str, content: bytes, stage: str = "Concept"):
 probe = f"上傳測試_{uuid.uuid4().hex[:6]}.md"
 status, data = upload(probe, b"# probe\n\nhello world")
 check("上傳成功回 200", status == 200, str(data)[:90])
-check("回傳存入的相對路徑", data.get("saved") == [f"Concept/{probe}"], str(data.get("saved")))
+# 沒指定知識庫就放根目錄（通用），所以相對路徑就是檔名本身、不帶資料夾
+check("回傳存入的相對路徑（未指定知識庫＝通用，落在根目錄）", data.get("saved") == [probe], str(data.get("saved")))
 
 check("不支援的格式被擋下並說明原因",
       "不支援的格式" in " ".join(upload("壞檔.exe", b"MZ")[1].get("errors", [])))
@@ -369,7 +374,7 @@ names = {d["file_name"] for d in docs}
 check("剛上傳的檔案立刻出現在清單", probe in names)
 
 # 收尾：把測試檔刪掉，順便再驗一次刪除
-for rel in (f"Concept/{probe}", dup):
+for rel in (probe, dup):
     call(f"/api/admin/documents?path={urllib.parse.quote(rel)}", ADMIN, "DELETE")
 docs = call("/api/admin/documents", ADMIN)[1].get("documents", [])
 check("測試檔已清除", probe not in {d["file_name"] for d in docs})
@@ -394,12 +399,60 @@ def head(path: str, token: str = "") -> tuple[int, dict]:
         return 0, {"error": str(exc)}
 
 
-_docs_seen = []
-for _code in ("Concept", "Plan", "EVT", "DVT", "PVT", "MP"):
-    _docs_seen += call(f"/api/stages/{_code}/documents", ADMIN)[1].get("documents", [])
+_docs_seen = call("/api/kbs/documents", ADMIN)[1].get("documents", [])
 DOC_PATH = _docs_seen[0]["路徑"] if _docs_seen else ""
 DOC_Q = urllib.parse.quote(DOC_PATH)
 check("取得一份已索引文件的路徑", bool(DOC_PATH), DOC_PATH[:60])
+
+# ----------------------------------------------------------------- 知識庫管理
+#
+# 一個知識庫 = 根目錄下的一個子資料夾；搬移只搬檔案並同步路徑，**不重新向量化**。
+# 全部用臨時名稱、跑完清乾淨，不動使用者自己的資料夾。
+_KB = "測試知識庫_" + uuid.uuid4().hex[:6]
+_KBQ = urllib.parse.quote(_KB)
+check("一般使用者不能建知識庫", call("/api/admin/kbs", USER, "POST", {"name": _KB})[0] == 403)
+check("名稱含路徑符號被拒", call("/api/admin/kbs", ADMIN, "POST", {"name": "a/b"})[0] == 400)
+check("名稱是系統保留字被拒", call("/api/admin/kbs", ADMIN, "POST", {"name": "venv"})[0] == 400)
+check("管理員可建知識庫", call("/api/admin/kbs", ADMIN, "POST", {"name": _KB})[0] == 200)
+check("重複建立被拒", call("/api/admin/kbs", ADMIN, "POST", {"name": _KB})[0] == 400)
+check("新知識庫出現在清單", any(k["name"] == _KB for k in call("/api/kbs", USER)[1]["kbs"]))
+
+# 上傳時順手新建另一個知識庫，檔案要落在那個資料夾
+_KB2 = _KB + "_b"
+_fn = f"kbtest_{uuid.uuid4().hex[:6]}.md"
+_st, _up = upload(_fn, ("# 測試" + chr(10) * 2 + "這是知識庫測試文件。").encode(), new_kb=_KB2)
+check("上傳可同時新建知識庫", _st == 200 and _up.get("saved") == [f"{_KB2}/{_fn}"], str(_up))
+
+_files = call("/api/admin/documents", ADMIN)[1]["documents"]
+_row = next((d for d in _files if d["file_name"] == _fn), None)
+check("清單顯示檔案所屬知識庫", _row is not None and _row["kb"] == _KB2, str(_row and _row["kb"]))
+
+# 搬到第一個知識庫、再搬到通用；每一步路徑與分類都要跟上
+check("搬到另一個知識庫", call("/api/admin/documents/move", ADMIN, "POST", {"rel_path": f"{_KB2}/{_fn}", "kb": _KB})[0] == 200)
+_row = next((d for d in call("/api/admin/documents", ADMIN)[1]["documents"] if d["file_name"] == _fn), None)
+check("搬移後 rel_path 與 kb 同步", _row and _row["rel_path"] == f"{_KB}/{_fn}" and _row["kb"] == _KB, str(_row and (_row["rel_path"], _row["kb"])))
+check("有檔案的知識庫不能刪", call(f"/api/admin/kbs/{_KBQ}", ADMIN, "DELETE")[0] == 400)
+check("搬到通用（根目錄）", call("/api/admin/documents/move", ADMIN, "POST", {"rel_path": f"{_KB}/{_fn}", "kb": None})[0] == 200)
+_row = next((d for d in call("/api/admin/documents", ADMIN)[1]["documents"] if d["file_name"] == _fn), None)
+check("通用的 rel_path 不帶資料夾、kb 為空", _row and _row["rel_path"] == _fn and not _row["kb"], str(_row and (_row["rel_path"], _row["kb"])))
+
+# 改名要同步；空的才能刪
+_KB3 = _KB + "_c"
+check("知識庫可改名", call(f"/api/admin/kbs/{_KBQ}", ADMIN, "PUT", {"new_name": _KB3})[0] == 200)
+check("改名後舊名消失、新名出現",
+      (lambda names: _KB not in names and _KB3 in names)([k["name"] for k in call("/api/kbs", USER)[1]["kbs"]]))
+check("空的知識庫可刪", call(f"/api/admin/kbs/{urllib.parse.quote(_KB3)}", ADMIN, "DELETE")[0] == 200)
+check("空的知識庫可刪（第二個）", call(f"/api/admin/kbs/{urllib.parse.quote(_KB2)}", ADMIN, "DELETE")[0] == 200)
+_del = call(f"/api/admin/documents?path={urllib.parse.quote(_fn)}", ADMIN, "DELETE")
+check("測試檔已清除", _del[0] == 200 and not any(d["file_name"] == _fn for d in call("/api/admin/documents", ADMIN)[1]["documents"]), str(_del))
+
+# 檢索範圍是集合；空字串代表通用。只驗機制：限定範圍後回來的切片不能落在範圍外。
+_kb_names = [k["name"] for k in call("/api/kbs", USER)[1]["kbs"] if k["doc_count"] > 0]
+if len(_kb_names) >= 2:
+    _pick = _kb_names[:1]
+    _hits = call("/api/admin/search-test", ADMIN, "POST", {"query": "測試", "kbs": _pick})[1].get("hits", [])
+    check("限定知識庫後檢索結果都在範圍內",
+          all((h["kb"] or "") in _pick for h in _hits), str({(h["kb"] or "通用") for h in _hits}))
 
 # 整份文件內容（「開啟完整文件」走這條，不下載）
 code, body = call(f"/api/documents/content?path={DOC_Q}", ADMIN)
@@ -467,7 +520,7 @@ else:
 
 # 白名單本身（不依賴知識庫裡剛好有哪些格式）
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from services import stage_service as _ss  # noqa: E402
+from services import kb_service as _ss  # noqa: E402
 
 check("PDF 可 inline", _ss.can_inline("a.pdf"))
 check("PNG 可 inline", _ss.can_inline("a.PNG"))
@@ -914,7 +967,7 @@ for _q in ["壓力測試的溫度條件", "DVT 是什麼", "今天午餐吃什�
 def _mk(cid, section, text, score):
     return RetrievedChunk(chunk_id=cid, doc_id=1, seq=cid, content=text,
                           locator=f"x.pdf › {section} #{cid}", file_name="x.pdf",
-                          file_path="x.pdf", stage_code=None, distance=1.0, rerank_score=score)
+                          file_path="x.pdf", kb=None, distance=1.0, rerank_score=score)
 
 
 def _drive_sections(chunks):

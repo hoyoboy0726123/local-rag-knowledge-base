@@ -17,9 +17,10 @@ from database import get_session
 from models import ChatMessage, ChatSession, Chunk, Document, User
 
 
-def create_session(user_id: int, stage_filter: str | None = None) -> int:
+def create_session(user_id: int, kb_filter: list[str] | None = None) -> int:
     with get_session() as session:
-        record = ChatSession(user_id=user_id, stage_filter=stage_filter)
+        record = ChatSession(user_id=user_id,
+                             kb_filter=json.dumps(kb_filter, ensure_ascii=False) if kb_filter else None)
         session.add(record)
         session.commit()
         return record.id
@@ -47,7 +48,7 @@ def list_sessions(user_id: int, limit: int = 50) -> pd.DataFrame:
             {
                 "ID": s.id,
                 "標題": s.title,
-                "階段": s.stage_filter or "全部",
+                "範圍": "、".join(k or "通用" for k in json.loads(s.kb_filter)) if s.kb_filter else "全部",
                 "訊息數": counts.get(s.id, 0),
                 "最後更新": s.updated_at.strftime("%Y-%m-%d %H:%M"),
             }
@@ -159,7 +160,7 @@ def resolve_sources(chunk_ids: list[int]) -> list[dict]:
             "index": order.get(chunk.id, 999) + 1,
             "file_name": doc.file_name,
             "file_path": doc.file_path,
-            "stage_code": doc.stage_code,
+            "kb": doc.kb,
             "locator": chunk.locator,
             "content": chunk.content,
         }

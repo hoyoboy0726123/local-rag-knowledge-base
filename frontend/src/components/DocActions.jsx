@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, getToken } from '../app/api'
 
-/* 一份文件可以做的三件事，問答頁與階段導覽頁共用。
+/* 一份文件可以做的三件事，問答頁與知識庫頁共用。
  *
  * **為什麼不是單純的 <a href>。** 後端走 JWT，token 存在 sessionStorage，
  * 而瀏覽器發出的原生連結請求不會帶 Authorization 標頭 —— 直接 <a> 會 401。

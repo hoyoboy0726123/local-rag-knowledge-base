@@ -17,7 +17,7 @@ except Exception:  # noqa: BLE001
     pass
 
 from database import get_session, init_db, set_setting
-from models import ROLE_ADMIN, ROLE_USER, STAGES, Stage, User
+from models import ROLE_ADMIN, ROLE_USER, User
 from services.auth_service import hash_password, new_salt
 
 DEMO_PASSWORD = "demo1234"
@@ -29,32 +29,6 @@ USERS = [
     ("user02", "一般使用者 B", ROLE_USER),
 ]
 
-STAGE_INFO = {
-    "Concept": (
-        "產品概念形成與可行性評估。此階段結束時需通過 Concept Gate 審查。",
-        ["市場需求書 (MRD)", "初步規格草案", "競品分析報告", "可行性評估", "初步成本試算"],
-    ),
-    "Plan": (
-        "專案正式立項，完成資源與時程規劃。",
-        ["產品需求書 (PRD)", "專案計畫書", "資源配置表", "風險評估表", "Key Part 選型清單"],
-    ),
-    "EVT": (
-        "工程驗證階段。驗證設計是否可行，重點在功能完整性。",
-        ["EVT 測試計畫", "功能測試報告", "電性量測報告", "問題追蹤清單", "EVT 檢討會議記錄"],
-    ),
-    "DVT": (
-        "設計驗證階段。驗證設計是否符合規格，重點在可靠度與量產性。",
-        ["DVT 測試計畫", "可靠度測試報告", "散熱驗證報告", "EMI/EMC 報告", "DFM 檢討報告"],
-    ),
-    "PVT": (
-        "量產驗證階段。以量產製程與治具進行小批量試產。",
-        ["試產申請單", "試產良率報告", "產線 SOP", "治具驗收紀錄", "PVT 檢討會議記錄"],
-    ),
-    "MP": (
-        "量產階段。正式移交製造並持續追蹤品質。",
-        ["量產移交檢查表", "量產品質報告", "客訴處理紀錄", "ECN 變更紀錄"],
-    ),
-}
 
 DOCUMENTS = {
     "Concept": [
@@ -412,24 +386,24 @@ def build_knowledge_base() -> int:
     KB_DIR.mkdir(exist_ok=True)
     count = 0
 
-    for stage_code, docs in DOCUMENTS.items():
-        stage_dir = KB_DIR / stage_code
-        stage_dir.mkdir(exist_ok=True)
+    # 示範文件依資料夾分組——每個資料夾就是一個知識庫（示範用的 NUC 六階段）
+    for folder, docs in DOCUMENTS.items():
+        kb_dir = KB_DIR / folder
+        kb_dir.mkdir(exist_ok=True)
         for filename, content in docs:
-            (stage_dir / filename).write_text(content, encoding="utf-8")
+            (kb_dir / filename).write_text(content, encoding="utf-8")
             count += 1
 
-    common = KB_DIR / "共通文件"
-    common.mkdir(exist_ok=True)
+    # 跨階段的文件直接放根目錄——那就是「通用」知識庫，不需要資料夾
     for filename, content in CROSS_STAGE:
-        (common / filename).write_text(content, encoding="utf-8")
+        (KB_DIR / filename).write_text(content, encoding="utf-8")
         count += 1
 
     return count
 
 
 def seed_db(knowledge_root: str | None = None) -> None:
-    """建立資料表、六大階段定義與展示帳號。**不產生任何文件。**
+    """建立資料表與展示帳號。**不產生任何文件。**
 
     `knowledge_root` 留空時不寫入該設定——這是刻意的：
     這套系統本身與領域無關，知識庫要指向哪個資料夾應該由使用者決定。
@@ -440,17 +414,6 @@ def seed_db(knowledge_root: str | None = None) -> None:
         set_setting("knowledge_root", knowledge_root)
 
     with get_session() as session:
-        if session.query(Stage).count() == 0:
-            for code, name_zh, seq in STAGES:
-                description, deliverables = STAGE_INFO.get(code, ("", []))
-                session.add(
-                    Stage(
-                        code=code, name_zh=name_zh, seq=seq,
-                        description=description,
-                        deliverables=json.dumps(deliverables, ensure_ascii=False),
-                    )
-                )
-
         if session.query(User).count() == 0:
             for username, display_name, role in USERS:
                 salt = new_salt()

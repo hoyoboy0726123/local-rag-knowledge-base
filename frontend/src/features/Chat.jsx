@@ -71,8 +71,37 @@ function stripLatex(text) {
    query 用單行省略：模型有時會產生兩百字的關鍵詞串（實測看過整張分類表被
    當成 query 送出），完整攤開會讓膠囊撐成一大塊，把答案擠到畫面外。
    完整內容留在 title，滑過去看得到。 */
+/* 檢索範圍：多選知識庫。空清單代表全部——多數時候使用者就是要查全部，
+   所以預設什麼都不勾。只在真的想限定範圍時才點開勾。
+   勾了範圍的效果是硬過濾：不在範圍內的文件連候選都不會進，不是排序往後。 */
+function ScopePicker({ kbs, scope, onChange }) {
+  const [open, setOpen] = useState(false)
+  const toggle = (name) => onChange(scope.includes(name) ? scope.filter((k) => k !== name) : [...scope, name])
+  const label = scope.length === 0
+    ? '檢索範圍：全部知識庫'
+    : `檢索範圍：${scope.map((k) => k || '通用').join('、')}`
+  return (
+    <div style={{ position: 'relative' }}>
+      <button className="btn ghost" onClick={() => setOpen((v) => !v)}>{label} ▾</button>
+      {open && (
+        <div className="panel" style={{ position: 'absolute', right: 0, top: '110%', zIndex: 20, minWidth: 220, padding: 8 }}>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 6px', fontSize: 12.5 }}>
+            <input type="checkbox" checked={scope.length === 0} onChange={() => onChange([])} /> 全部
+          </label>
+          {kbs.map((k) => (
+            <label key={k.name} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 6px', fontSize: 12.5 }}>
+              <input type="checkbox" checked={scope.includes(k.name)} onChange={() => toggle(k.name)} />
+              {k.label}<span style={{ marginLeft: 'auto', color: 'var(--ink-3)', fontSize: 11 }}>{k.doc_count} 份</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function Trace({ search }) {
-  const { query, stage, hits, seen_only: seenOnly } = search
+  const { query, kbs: scopeKbs, hits, seen_only: seenOnly } = search
   const count = hits > 0
     ? `${hits} 段`
     : (seenOnly ? '0 段（前面已提供）' : '0 段')
@@ -80,7 +109,7 @@ function Trace({ search }) {
     <div className="trace" title={query}>
       <span className="k">◐ 檢索</span>
       <span className="q">{query}</span>
-      {stage && <span className="st">（{stage}）</span>}
+      {scopeKbs && scopeKbs.length > 0 && <span className="st">（{scopeKbs.map((k) => k || '通用').join('、')}）</span>}
       <b className={hits > 0 ? '' : 'zero'}>· {count}</b>
     </div>
   )
@@ -186,7 +215,7 @@ function SourceModal({ src, onClose }) {
           <div style={{ minWidth: 0 }}>
             <b>{src.file_name}</b>
             <div className="smeta" style={{ marginLeft: 0, marginTop: 3 }}>
-              {src.stage_code && <span className="tag">{src.stage_code}</span>}
+              {src.kb && <span className="tag">{src.kb}</span>}
               <span>{showingDoc ? '完整文件' : src.locator}</span>
             </div>
           </div>
@@ -230,8 +259,9 @@ export default function Chat() {
   const [sessionId, setSessionId] = useState(null)
   const [sessions, setSessions] = useState([])
   const [messages, setMessages] = useState([])
-  const [stages, setStages] = useState([])
-  const [scope, setScope] = useState('')
+  const [kbs, setKbs] = useState([])
+  // 檢索範圍：勾選的知識庫名稱清單（'' 代表通用）；空清單 = 全部
+  const [scope, setScope] = useState([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [live, setLive] = useState(null)     // 進行中的回答
@@ -245,7 +275,7 @@ export default function Chat() {
   const loadSessions = () => api.get('/api/chat/sessions').then((d) => setSessions(d.sessions))
 
   useEffect(() => {
-    api.get('/api/stages').then((d) => setStages(d.stages))
+    api.get('/api/kbs').then((d) => setKbs(d.kbs))
     loadSessions()
   }, [])
 
@@ -300,7 +330,7 @@ export default function Chat() {
 
     try {
       await stream('/api/chat/ask',
-        { session_id: sid, question, stage_code: scope || null, wide },
+        { session_id: sid, question, kbs: scope.length ? scope : null, wide },
         (name, data) => {
           if (name === 'search') {
             setLive((l) => ({ ...l, searches: [...l.searches, data] }))
@@ -354,10 +384,7 @@ export default function Chat() {
           <button className="btn ghost" onClick={() => setRailOpen((v) => !v)} title="收合對話清單">
             {railOpen ? '◧ 收合清單' : '◨ 展開清單'}
           </button>
-          <select className="sel" value={scope} onChange={(e) => setScope(e.target.value)}>
-            <option value="">檢索範圍：全部階段</option>
-            {stages.map((s) => <option key={s.code} value={s.code}>{s.code} — {s.name_zh}</option>)}
-          </select>
+          <ScopePicker kbs={kbs} scope={scope} onChange={setScope} />
         </div>
       </header>
 
@@ -505,7 +532,7 @@ export default function Chat() {
                     把它們平鋪成一串會讓人以為那是同一份規格。 */}
                 <div className="srcgrouphead">
                   <b>{fileName}</b>
-                  {items[0].stage_code && <span className="tag">{items[0].stage_code}</span>}
+                  {items[0].kb && <span className="tag">{items[0].kb}</span>}
                   <span className="pill">{items.length}</span>
                 </div>
                 {items.map((s) => (

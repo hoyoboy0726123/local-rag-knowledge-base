@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import io
 import json
 import zipfile
@@ -27,7 +28,6 @@ from database import (
 from models import (
     DOC_FAILED,
     DOC_INDEXED,
-    STAGES,
     Chunk,
     ChunkKeyword,
     Document,
@@ -172,22 +172,166 @@ def file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def guess_stage(path: Path, root: Path) -> str | None:
-    """依路徑或檔名推測所屬階段。
+# ------------------------------------------------------------ 知識庫（資料夾）
+#
+# **一個知識庫 = 知識庫根目錄下的一個子資料夾；直接放在根目錄的檔案屬於「通用」。**
+# 資料夾是唯一的真相來源：使用者用檔案總管把檔案丟進子資料夾也算歸類，
+# 全量重建不會丟失分類，資料夾結構本身就是備份。代價是搬移要真的搬檔案——
+# 但搬檔案**不需要重新向量化**，內容沒變，只要把資料庫裡的路徑同步過去。
+KB_NAME_MAX = 64
+_KB_NAME_BAD = re.compile(r'[\/:*?"<>|\x00-\x1f]')
 
-    知識庫資料夾建議以階段代碼命名子目錄（如 `EVT/`），
-    找不到時回傳 None，該文件仍可被檢索，只是不受階段過濾。
-    """
+
+def valid_kb_name(name: str) -> tuple[bool, str]:
+    name = (name or "").strip()
+    if not name:
+        return False, "名稱不能是空的"
+    if len(name) > KB_NAME_MAX:
+        return False, f"名稱不能超過 {KB_NAME_MAX} 字"
+    if _KB_NAME_BAD.search(name) or name in (".", ".."):
+        return False, "名稱不能包含路徑符號或特殊字元"
+    if name.startswith("."):
+        return False, "名稱不能以「.」開頭"
+    if name.lower() in SKIP_DIRS:
+        return False, f"「{name}」是系統保留的資料夾名稱"
+    return True, ""
+
+
+def kb_of(path: Path, root: Path) -> str | None:
+    """檔案所屬的知識庫：根目錄下第一層子資料夾的名稱；直接在根目錄則為 None（通用）。"""
     try:
-        relative = str(path.relative_to(root))
+        parts = path.resolve().relative_to(root.resolve()).parts
     except ValueError:
-        relative = str(path)
-    haystack = relative.upper().replace("\\", "/")
+        return None
+    return parts[0] if len(parts) >= 2 else None
 
-    for code, _name, _seq in STAGES:
-        if re.search(rf"(^|[/_\-\s]){re.escape(code.upper())}([/_\-\s.]|$)", haystack):
-            return code
-    return None
+
+def list_kb_names(root_path: str) -> list[str]:
+    root = Path(root_path)
+    if not root_path or not root.is_dir():
+        return []
+    names = [
+        p.name for p in root.iterdir()
+        if p.is_dir() and not p.name.startswith(".") and p.name.lower() not in SKIP_DIRS
+    ]
+    return sorted(names, key=str.casefold)
+
+
+def create_kb(root_path: str, name: str) -> tuple[bool, str]:
+    ok, why = valid_kb_name(name)
+    if not ok:
+        return False, why
+    root = Path(root_path)
+    if not root_path or not root.is_dir():
+        return False, "知識庫根目錄不存在"
+    target = root / name.strip()
+    if target.exists():
+        return False, f"「{name}」已經存在"
+    try:
+        target.mkdir()
+    except OSError as exc:
+        return False, f"建立失敗：{exc}"
+    return True, f"已建立知識庫「{name}」"
+
+
+def _rebase_paths(old_prefix: str, new_prefix: str) -> None:
+    """把資料庫裡所有以 old_prefix 開頭的絕對路徑改成 new_prefix。
+
+    **四張表都要改，少一張就會留下孤兒**：documents 是索引本體；
+    chunk_keywords 是關鍵字／編輯備份，靠路徑套回；doc_options 是強制視覺
+    解析的開關；ingest_errors 是解析狀態頁的來源。它們都以絕對路徑當鍵。
+    """
+    from models import DocOption
+
+    with get_session() as session:
+        for model in (Document, ChunkKeyword, DocOption, IngestError):
+            for row in session.query(model).filter(model.file_path.like(old_prefix + "%")).all():
+                if row.file_path == old_prefix or row.file_path.startswith(old_prefix + os.sep):
+                    row.file_path = new_prefix + row.file_path[len(old_prefix):]
+        session.commit()
+
+
+def rename_kb(root_path: str, old: str, new: str) -> tuple[bool, str]:
+    ok, why = valid_kb_name(new)
+    if not ok:
+        return False, why
+    root = Path(root_path)
+    src, dst = root / old, root / new.strip()
+    if not src.is_dir():
+        return False, f"「{old}」不存在"
+    if dst.exists():
+        return False, f"「{new}」已經存在"
+    try:
+        src.rename(dst)
+    except OSError as exc:
+        return False, f"改名失敗：{exc}"
+    _rebase_paths(str(src.resolve()), str(dst.resolve()))
+    with get_session() as session:
+        session.query(Document).filter(Document.kb == old).update({"kb": new.strip()})
+        session.commit()
+    return True, f"已將「{old}」改名為「{new}」"
+
+
+def delete_kb(root_path: str, name: str) -> tuple[bool, str]:
+    """只刪空的知識庫。裡面還有檔案就拒絕——要先搬走或搬到通用。
+
+    比「自動搬到通用」安全：不會有人誤刪一整批文件的分類。
+    """
+    root = Path(root_path)
+    target = root / name
+    if not target.is_dir() or kb_of(target / "x", root) != name:
+        return False, f"「{name}」不存在"
+    if any(p.is_file() for p in target.rglob("*")):
+        return False, f"「{name}」裡還有檔案，請先搬走"
+    try:
+        for sub in sorted(target.rglob("*"), reverse=True):
+            sub.rmdir()
+        target.rmdir()
+    except OSError as exc:
+        return False, f"刪除失敗：{exc}"
+    return True, f"已刪除知識庫「{name}」"
+
+
+def move_document(root_path: str, rel_path: str, kb: str | None) -> tuple[bool, str]:
+    """把一份文件搬到另一個知識庫（kb=None 代表通用）。**不重新向量化。**
+
+    內容沒變，切片與向量原封不動；要同步的只有路徑（四張表）與 documents.kb。
+    """
+    root = Path(root_path)
+    if not root_path or not root.is_dir():
+        return False, "知識庫根目錄不存在"
+    try:
+        src = (root / rel_path).resolve()
+        src.relative_to(root.resolve())
+    except (ValueError, OSError):
+        return False, "路徑不合法"
+    if not src.is_file():
+        return False, "檔案不存在"
+    if kb:
+        ok, why = valid_kb_name(kb)
+        if not ok:
+            return False, why
+        dst_dir = root / kb.strip()
+        if not dst_dir.is_dir():
+            return False, f"知識庫「{kb}」不存在"
+    else:
+        dst_dir = root
+    dst = dst_dir / src.name
+    if dst.resolve() == src:
+        return True, "已經在該知識庫裡"
+    if dst.exists():
+        return False, f"目的地已有同名檔案：{src.name}"
+    try:
+        src.rename(dst)
+    except OSError as exc:
+        return False, f"搬移失敗：{exc}"
+    _rebase_paths(str(src), str(dst.resolve()))
+    with get_session() as session:
+        doc = session.query(Document).filter(Document.file_path == str(dst.resolve())).first()
+        if doc:
+            doc.kb = kb.strip() if kb else None
+            session.commit()
+    return True, f"已搬到「{kb or '通用'}」"
 
 
 # 結構標記：每種來源長得不一樣，但作用相同——標示「這裡是一個新單元的開頭」，
@@ -946,17 +1090,23 @@ def _uploaded_bytes(uploaded) -> bytes:
     return uploaded.read()
 
 
-def save_uploads(root_path: str, files, stage_code: str | None = None) -> tuple[list[str], list[str]]:
+def save_uploads(root_path: str, files, kb: str | None = None) -> tuple[list[str], list[str]]:
     """把使用者上傳的檔案存進知識庫資料夾。
 
-    指定階段時存入該階段的子資料夾，這樣後續的 guess_stage() 就能自動歸類。
+    指定知識庫時存入該子資料夾，這樣後續的 kb_of() 就能自動歸類；沒指定就放根目錄（通用）。
     回傳 (成功的檔名, 錯誤訊息)。
     """
     root = Path(root_path)
     if not root_path or not root.exists():
         return [], [f"知識庫資料夾不存在：{root_path or '（未設定）'}"]
 
-    target_dir = root / stage_code if stage_code else root / "未分類"
+    if kb:
+        ok, why = valid_kb_name(kb)
+        if not ok:
+            return [], [why]
+        if not (root / kb.strip()).is_dir():
+            return [], [f"知識庫「{kb}」不存在"]
+    target_dir = root / kb.strip() if kb else root
     target_dir.mkdir(parents=True, exist_ok=True)
 
     saved: list[str] = []
@@ -1048,7 +1198,7 @@ def list_library_files(root_path: str) -> list[dict]:
                 "file_name": path.name,
                 "file_type": path.suffix.lower().lstrip("."),
                 "file_size": size,
-                "stage_code": doc.stage_code if doc else guess_stage(path, root),
+                "kb": doc.kb if doc else kb_of(path, root),
                 "indexed": doc is not None and doc.status == DOC_INDEXED,
                 "status": doc.status if doc else "未索引",
                 "chunk_count": doc.chunk_count if doc else 0,
@@ -1311,6 +1461,13 @@ def _index_document(path: Path, root: Path, stats: IngestStats, enable_vlm: bool
         # 少了這條，閱讀頁永遠讀不到存下來的內容，只能回退去重新解析。
         if (doc and doc.sha256 == digest and doc.status == DOC_INDEXED
                 and bool(doc.used_vlm) == force_vlm and doc.content):
+            # 內容沒變可以跳過解析，但**分類要跟著資料夾走**：使用者用檔案總管
+            # 把檔案搬到另一個知識庫時 sha256 不會變，少了這一行 DB 會一直
+            # 記著舊分類，檢索範圍就過濾錯了。資料夾是唯一的真相來源。
+            actual_kb = kb_of(path, root)
+            if doc.kb != actual_kb:
+                doc.kb = actual_kb
+                session.commit()
             stats.skipped += 1
             return
 
@@ -1324,7 +1481,7 @@ def _index_document(path: Path, root: Path, stats: IngestStats, enable_vlm: bool
         doc.file_size = size
         doc.sha256 = digest
         doc.modified_at = mtime
-        doc.stage_code = guess_stage(path, root)
+        doc.kb = kb_of(path, root)
         session.commit()
         doc_id = doc.id
 

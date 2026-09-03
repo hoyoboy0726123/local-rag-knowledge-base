@@ -1,4 +1,4 @@
-"""階段導覽、文件閱讀與下載。"""
+"""知識庫清單、文件閱讀與下載。"""
 
 from __future__ import annotations
 
@@ -8,9 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from backend.deps import current_user
-from services import stage_service
+from database import get_setting
+from services import ingest_service, kb_service
 
-router = APIRouter(prefix="/api", tags=["stages"])
+router = APIRouter(prefix="/api", tags=["kbs"])
 
 
 class OpenBody(BaseModel):
@@ -21,34 +22,35 @@ def _docs(df) -> list[dict]:
     return [] if df.empty else df.to_dict("records")
 
 
-@router.get("/stages")
-def list_stages(_: dict = Depends(current_user)) -> dict:
-    counts = stage_service.stage_doc_counts()
-    stages = [
-        {**s, "doc_count": counts.get(s["code"], 0)}
-        for s in stage_service.list_stages()
-    ]
-    return {"stages": stages, "stats": stage_service.library_stats()}
+@router.get("/kbs")
+def list_kbs(_: dict = Depends(current_user)) -> dict:
+    """知識庫清單。**「通用」永遠在第一個**，它就是根目錄的檔案，不是資料夾。
 
-
-@router.get("/stages/{code}/documents")
-def stage_documents(code: str, _: dict = Depends(current_user)) -> dict:
-    return {"documents": _docs(stage_service.get_stage_documents(code))}
-
-
-@router.get("/documents/unclassified")
-def unclassified(_: dict = Depends(current_user)) -> dict:
-    """未歸屬任何階段的文件。
-
-    時間軸只有六個階段，沒有這個端點的話，管理辦法總則、跨部門窗口一覽
-    這類跨階段文件在介面上**完全沒有入口**——AI 查得到，人卻瀏覽不到。
+    清單以磁碟為準（根目錄下的子資料夾），文件數以索引為準——
+    使用者用檔案總管新建的資料夾也會出現，只是文件數是 0，直到建索引。
     """
-    return {"documents": _docs(stage_service.get_unclassified_documents())}
+    root = get_setting("knowledge_root", "")
+    counts = kb_service.kb_doc_counts()
+    names = ingest_service.list_kb_names(root)
+    # 索引裡有、資料夾卻不見了的（例如被使用者手動刪掉）也要列，否則那些文件沒有入口
+    for name in counts:
+        if name and name not in names:
+            names.append(name)
+    kbs = [{"name": "", "label": "通用", "is_general": True, "doc_count": counts.get(None, 0)}]
+    kbs += [{"name": n, "label": n, "is_general": False, "doc_count": counts.get(n, 0)}
+            for n in sorted(names, key=str.casefold)]
+    return {"kbs": kbs, "stats": kb_service.library_stats()}
+
+
+@router.get("/kbs/documents")
+def kb_documents(kb: str | None = None, _: dict = Depends(current_user)) -> dict:
+    """某個知識庫的已索引文件。`kb=`（空字串）是通用；不帶參數是全部。"""
+    return {"documents": _docs(kb_service.get_kb_documents(kb))}
 
 
 @router.get("/documents/content")
 def document_content(path: str, _: dict = Depends(current_user)) -> dict:
-    content, error = stage_service.read_document(path)
+    content, error = kb_service.read_document(path)
     if error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, error)
     return {"content": content, "char_count": len(content)}
@@ -77,13 +79,13 @@ def document_download(
     那個呼叫會在伺服器上開檔，遠端使用者點下去什麼也不會發生。
     真的要用本機程式開啟請走 `/documents/open`（僅限 localhost）。
     """
-    data = stage_service.read_document_bytes(path)
+    data = kb_service.read_document_bytes(path)
     if data is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "檔案已不存在或不在知識庫索引中")
     name = urllib.parse.quote(path.replace("\\", "/").rsplit("/", 1)[-1])
-    serve_inline = inline and stage_service.can_inline(path)
+    serve_inline = inline and kb_service.can_inline(path)
     disposition = "inline" if serve_inline else "attachment"
-    media = stage_service.media_type_of(path) if serve_inline else "application/octet-stream"
+    media = kb_service.media_type_of(path) if serve_inline else "application/octet-stream"
     return Response(
         content=data,
         media_type=media,
@@ -123,7 +125,7 @@ def document_open(request: Request, body: OpenBody, _: dict = Depends(current_us
             status.HTTP_403_FORBIDDEN,
             "這個功能只能在執行本系統的那台電腦上使用。請改用下載。",
         )
-    ok, error = stage_service.open_with_local_app(body.path)
+    ok, error = kb_service.open_with_local_app(body.path)
     if not ok:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, error)
     return {"opened": True}

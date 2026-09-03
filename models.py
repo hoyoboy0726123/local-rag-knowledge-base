@@ -32,16 +32,6 @@ ROLE_LABELS = {
     ROLE_USER: "一般使用者",
 }
 
-# NUC Stage-Gate 六大階段
-STAGES = [
-    ("Concept", "概念階段", 1),
-    ("Plan", "規劃階段", 2),
-    ("EVT", "工程驗證", 3),
-    ("DVT", "設計驗證", 4),
-    ("PVT", "量產驗證", 5),
-    ("MP", "量產階段", 6),
-]
-
 # 文件解析狀態
 DOC_INDEXED = "indexed"
 DOC_FAILED = "failed"
@@ -63,17 +53,6 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class Stage(Base):
-    __tablename__ = "stages"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    code: Mapped[str] = mapped_column(String(32), unique=True)
-    name_zh: Mapped[str] = mapped_column(String(64))
-    seq: Mapped[int] = mapped_column(Integer)
-    description: Mapped[str] = mapped_column(Text, default="")
-    deliverables: Mapped[str] = mapped_column(Text, default="[]")  # JSON 陣列
-
-
 class Document(Base):
     __tablename__ = "documents"
 
@@ -84,7 +63,10 @@ class Document(Base):
     file_size: Mapped[int] = mapped_column(Integer, default=0)
     sha256: Mapped[str] = mapped_column(String(64), default="", index=True)
     modified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    stage_code: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    # 所屬知識庫 = 知識庫根目錄下的第一層子資料夾名稱；None 代表「通用」
+    # （直接放在根目錄的檔案）。**資料夾是唯一的真相來源**：使用者用檔案總管
+    # 把檔案丟進子資料夾也算歸類，全量重建不會丟失分類。
+    kb: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default=DOC_PENDING)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -185,7 +167,8 @@ class ChatSession(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     title: Mapped[str] = mapped_column(String(255), default="新對話")
-    stage_filter: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 建立對話時選的檢索範圍（JSON 陣列的知識庫名稱），只作顯示用
+    kb_filter: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, onupdate=datetime.now

@@ -1,8 +1,7 @@
-"""Stage-Gate 資料與文件掛載查詢。"""
+"""知識庫文件查詢、切片維護、文件閱讀與下載。"""
 
 from __future__ import annotations
 
-import json
 import mimetypes
 import os
 from functools import lru_cache
@@ -11,37 +10,23 @@ from pathlib import Path
 import pandas as pd
 
 from database import get_session, get_setting
-from models import DOC_INDEXED, Document, Stage
+from models import DOC_INDEXED, Document
 from services import ingest_service
 
 
-def list_stages() -> list[dict]:
-    with get_session() as session:
-        rows = session.query(Stage).order_by(Stage.seq).all()
-    return [
-        {
-            "code": s.code,
-            "name_zh": s.name_zh,
-            "seq": s.seq,
-            "description": s.description,
-            "deliverables": json.loads(s.deliverables or "[]"),
-        }
-        for s in rows
-    ]
+def get_kb_documents(kb: str | None = None) -> pd.DataFrame:
+    """某個知識庫的已索引文件。
 
-
-def get_stage(code: str) -> dict | None:
-    for stage in list_stages():
-        if stage["code"] == code:
-            return stage
-    return None
-
-
-def get_stage_documents(stage_code: str | None) -> pd.DataFrame:
+    `kb` 是 None → 全部；`""`（空字串）→ 通用（根目錄檔案，kb 為 NULL）；
+    其他 → 該名稱的知識庫。空字串當「通用」的鍵是刻意的：它不是資料夾，
+    沒有名稱可用，而 None 已經被「全部」佔走。
+    """
     with get_session() as session:
         query = session.query(Document).filter(Document.status == DOC_INDEXED)
-        if stage_code:
-            query = query.filter(Document.stage_code == stage_code)
+        if kb == "":
+            query = query.filter(Document.kb.is_(None))
+        elif kb:
+            query = query.filter(Document.kb == kb)
         rows = query.order_by(Document.file_name).all()
 
     return pd.DataFrame(
@@ -49,7 +34,7 @@ def get_stage_documents(stage_code: str | None) -> pd.DataFrame:
             {
                 "文件名稱": d.file_name,
                 "類型": d.file_type.upper(),
-                "階段": d.stage_code or "未分類",
+                "知識庫": d.kb or "通用",
                 "切片數": d.chunk_count,
                 "VLM 解析": "✅" if d.used_vlm else "",
                 "索引時間": d.indexed_at.strftime("%Y-%m-%d %H:%M") if d.indexed_at else "-",
@@ -60,48 +45,18 @@ def get_stage_documents(stage_code: str | None) -> pd.DataFrame:
     )
 
 
-def get_unclassified_documents() -> pd.DataFrame:
-    """沒有歸屬到任何階段的文件。
-
-    這類文件過去在階段導覽裡**完全看不到**——時間軸只列六個階段，
-    未分類的就沒有入口。而它們往往是最基礎的跨階段文件
-    （管理辦法總則、跨部門窗口一覽），使用者反而找不到。
-    AI 問答查得到它們，用瀏覽的就找不到，這個落差要補起來。
-    """
-    with get_session() as session:
-        rows = (
-            session.query(Document)
-            .filter(Document.status == DOC_INDEXED, Document.stage_code.is_(None))
-            .order_by(Document.file_name)
-            .all()
-        )
-
-    return pd.DataFrame(
-        [
-            {
-                "文件名稱": d.file_name,
-                "類型": d.file_type.upper(),
-                "切片數": d.chunk_count,
-                "VLM 解析": "✅" if d.used_vlm else "",
-                "索引時間": d.indexed_at.strftime("%Y-%m-%d %H:%M") if d.indexed_at else "-",
-                "路徑": d.file_path,
-            }
-            for d in rows
-        ]
-    )
-
-
-def stage_doc_counts() -> dict[str, int]:
+def kb_doc_counts() -> dict[str | None, int]:
+    """各知識庫的已索引文件數。鍵 None 代表通用。"""
     from sqlalchemy import func
 
     with get_session() as session:
         rows = (
-            session.query(Document.stage_code, func.count(Document.id))
+            session.query(Document.kb, func.count(Document.id))
             .filter(Document.status == DOC_INDEXED)
-            .group_by(Document.stage_code)
+            .group_by(Document.kb)
             .all()
         )
-    return {code or "未分類": count for code, count in rows}
+    return {kb: count for kb, count in rows}
 
 
 def list_chunks(
@@ -128,10 +83,10 @@ def list_chunks(
         [
             {
                 "切片 ID": chunk.id,
-                # 前端要靠這個把切片依文件分組。用檔名分組會在同名不同階段時併錯組。
+                # 前端要靠這個把切片依文件分組。用檔名分組會在同名不同知識庫時併錯組。
                 "文件 ID": chunk.doc_id,
                 "文件": doc.file_name,
-                "階段": doc.stage_code or "未分類",
+                "知識庫": doc.kb or "通用",
                 "位置": chunk.locator,
                 "字數": chunk.char_count,
                 "內容": chunk.content,
@@ -322,7 +277,7 @@ def get_chunk(chunk_id: int) -> dict | None:
         chunk, doc = result
         return {
             "id": chunk.id, "file_name": doc.file_name,
-            "stage_code": doc.stage_code, "locator": chunk.locator,
+            "kb": doc.kb, "locator": chunk.locator,
             "content": chunk.content, "char_count": chunk.char_count,
             "keywords": chunk.keywords or "",
             # 有原文備份就代表被編輯過。前端要標示出來，

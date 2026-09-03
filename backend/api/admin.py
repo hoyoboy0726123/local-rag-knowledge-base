@@ -14,7 +14,7 @@ from backend.deps import require_admin
 from database import get_int_setting, get_session, get_setting, set_setting
 from models import IngestError
 from services import (auth_service, ingest_service, ollama_client, rag_service,
-                      reranker, stage_service)
+                      reranker, kb_service)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -46,7 +46,7 @@ class ContentBody(BaseModel):
 
 class SearchTestBody(BaseModel):
     query: str
-    stage_code: str | None = None
+    kbs: list[str] | None = None
 
 
 class ModelsBody(BaseModel):
@@ -68,7 +68,7 @@ def chunks(doc_id: int | None = None, keyword: str = "", limit: int = 3000,
     原本的 200 會在管理員完全不知情的狀況下把後面的切片藏起來——
     而這一頁的用途正是「確認到底存進去了什麼」，靜默截斷會直接誤導判斷。
     """
-    df = stage_service.list_chunks(doc_id, keyword, limit)
+    df = kb_service.list_chunks(doc_id, keyword, limit)
     rows = [] if df.empty else df.to_dict("records")
     return {"chunks": rows, "truncated": len(rows) >= limit, "limit": limit}
 
@@ -82,7 +82,7 @@ def set_content(chunk_id: int, body: ContentBody,
     介面標示「已編輯」、隨時可比對與還原。
     編輯結果會另存進 `chunk_keywords.edited_content`，重新索引後自動套回。
     """
-    ok, message = stage_service.set_chunk_content(chunk_id, body.content)
+    ok, message = kb_service.set_chunk_content(chunk_id, body.content)
     if not ok:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, message)
     return {"ok": True, "message": message}
@@ -91,7 +91,7 @@ def set_content(chunk_id: int, body: ContentBody,
 @router.post("/chunks/{chunk_id}/revert")
 def revert_content(chunk_id: int, _: dict = Depends(require_admin)) -> dict:
     """還原成檔案原本解析出來的內容。"""
-    ok, message = stage_service.revert_chunk_content(chunk_id)
+    ok, message = kb_service.revert_chunk_content(chunk_id)
     if not ok:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, message)
     return {"ok": True, "message": message}
@@ -105,7 +105,7 @@ def delete_chunk(chunk_id: int, _: dict = Depends(require_admin)) -> dict:
     「全量重建」會讓它原樣長回來（增量更新則因為 sha256 未變而跳過該檔）。
     前端必須把這件事講清楚，否則管理員會以為噪音已經永久排除。
     """
-    ok, message = stage_service.delete_chunk(chunk_id)
+    ok, message = kb_service.delete_chunk(chunk_id)
     if not ok:
         raise HTTPException(status.HTTP_404_NOT_FOUND, message)
     return {"deleted": True, "message": message}
@@ -113,7 +113,7 @@ def delete_chunk(chunk_id: int, _: dict = Depends(require_admin)) -> dict:
 
 @router.get("/chunks/{chunk_id}")
 def chunk_detail(chunk_id: int, _: dict = Depends(require_admin)) -> dict:
-    detail = stage_service.get_chunk(chunk_id)
+    detail = kb_service.get_chunk(chunk_id)
     if not detail:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "找不到該切片")
     return detail
@@ -127,7 +127,7 @@ def set_keywords(chunk_id: int, body: KeywordsBody,
     少了重算這一步，整個功能就只是個沒作用的輸入框——
     向量是索引當下算的，只改資料庫欄位檢索結果完全不變。
     """
-    ok, message = stage_service.set_chunk_keywords(chunk_id, body.keywords)
+    ok, message = kb_service.set_chunk_keywords(chunk_id, body.keywords)
     if not ok:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, message)
     return {"message": message}
@@ -136,14 +136,14 @@ def set_keywords(chunk_id: int, body: KeywordsBody,
 # ------------------------------------------------------------------ 檢索測試
 @router.post("/search-test")
 def search_test(body: SearchTestBody, _: dict = Depends(require_admin)) -> dict:
-    hits, error = rag_service.retrieve(body.query, body.stage_code)
+    hits, error = rag_service.retrieve(body.query, body.kbs or None)
     if error:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, error)
     return {
         "hits": [
             {
                 "chunk_id": h.chunk_id, "file_name": h.file_name,
-                "locator": h.locator, "stage_code": h.stage_code,
+                "locator": h.locator, "kb": h.kb,
                 "distance": round(h.distance, 4),
                 "content": h.content[:300],
             }
@@ -162,7 +162,7 @@ def index_status(_: dict = Depends(require_admin)) -> dict:
     images = ingest_service.count_image_type(Path(root)) if root else []
     return {
         "root": root,
-        "stats": stage_service.library_stats(),
+        "stats": kb_service.library_stats(),
         "vlm_ready": ready,
         "vlm_reason": reason,
         "image_files": [p.name for p in images],
@@ -239,7 +239,7 @@ def run_index(full: bool = False, _: dict = Depends(require_admin)) -> Streaming
 
 
 @router.post("/upload")
-async def upload(stage_code: str | None = None, force_vlm: bool = False,
+async def upload(kb: str | None = None, new_kb: str | None = None, force_vlm: bool = False,
                  files: list[UploadFile] = File(...),
                  _: dict = Depends(require_admin)) -> dict:
     # 還沒設定知識庫資料夾時，**自動建立預設資料夾並記住它**。
@@ -254,7 +254,13 @@ async def upload(stage_code: str | None = None, force_vlm: bool = False,
         ingest_service.DEFAULT_KB_DIR.mkdir(parents=True, exist_ok=True)
         set_setting("knowledge_root", root)
 
-    saved, errors = ingest_service.save_uploads(root, files, stage_code)
+    # 「上傳時順手新建知識庫」：new_kb 有值就先建資料夾，再把檔案放進去。
+    if new_kb and new_kb.strip():
+        ok, message = ingest_service.create_kb(root, new_kb)
+        if not ok:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, message)
+        kb = new_kb.strip()
+    saved, errors = ingest_service.save_uploads(root, files, kb or None)
     # 「要不要用視覺模型解析」在上傳當下就該決定，所以選項在這裡一併寫入。
     # 存的是絕對路徑，跟索引流程查的鍵一致。
     if force_vlm:
@@ -262,6 +268,62 @@ async def upload(stage_code: str | None = None, force_vlm: bool = False,
         for rel in saved:
             ingest_service.set_doc_option(str(_P(root) / rel), True)
     return {"saved": saved, "errors": errors}
+
+
+# ------------------------------------------------------------------ 知識庫
+class KbBody(BaseModel):
+    name: str
+
+
+class KbRenameBody(BaseModel):
+    new_name: str
+
+
+class MoveBody(BaseModel):
+    rel_path: str
+    kb: str | None = None   # None 或空字串 = 通用
+
+
+@router.post("/kbs")
+def create_kb(body: KbBody, _: dict = Depends(require_admin)) -> dict:
+    """新建知識庫 = 在根目錄下建一個子資料夾。"""
+    root = get_setting("knowledge_root", "")
+    if not root.strip():
+        root = str(ingest_service.DEFAULT_KB_DIR)
+        ingest_service.DEFAULT_KB_DIR.mkdir(parents=True, exist_ok=True)
+        set_setting("knowledge_root", root)
+    ok, message = ingest_service.create_kb(root, body.name)
+    if not ok:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, message)
+    return {"ok": True, "message": message}
+
+
+@router.put("/kbs/{name}")
+def rename_kb(name: str, body: KbRenameBody, _: dict = Depends(require_admin)) -> dict:
+    """改名會同步資料庫裡的路徑與分類，**不需要重新索引**。"""
+    ok, message = ingest_service.rename_kb(get_setting("knowledge_root", ""), name, body.new_name)
+    if not ok:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, message)
+    return {"ok": True, "message": message}
+
+
+@router.delete("/kbs/{name}")
+def delete_kb(name: str, _: dict = Depends(require_admin)) -> dict:
+    """只能刪空的知識庫。裡面還有文件會拒絕，要先搬走。"""
+    ok, message = ingest_service.delete_kb(get_setting("knowledge_root", ""), name)
+    if not ok:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, message)
+    return {"ok": True, "message": message}
+
+
+@router.post("/documents/move")
+def move_document(body: MoveBody, _: dict = Depends(require_admin)) -> dict:
+    """把文件搬到另一個知識庫。內容沒變，切片與向量原封不動，只同步路徑。"""
+    ok, message = ingest_service.move_document(
+        get_setting("knowledge_root", ""), body.rel_path, body.kb or None)
+    if not ok:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, message)
+    return {"ok": True, "message": message}
 
 
 @router.get("/documents")

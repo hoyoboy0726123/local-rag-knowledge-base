@@ -114,7 +114,21 @@ def _migrate_columns() -> None:
         ("chunk_keywords", "edited_content"): "TEXT DEFAULT ''",
         ("documents", "content"): "TEXT DEFAULT ''",
     }
+    # 欄位改名：階段 → 知識庫。舊資料庫的值（Concept／DVT…）本來就是資料夾名稱，
+    # 改名後語意直接對上，不需要搬任何資料。
+    renames = {
+        ("documents", "stage_code"): "kb",
+        ("chat_sessions", "stage_filter"): "kb_filter",
+    }
     with get_engine().begin() as conn:
+        for (table, old_col), new_col in renames.items():
+            existing = {
+                row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")
+            }
+            if old_col in existing and new_col not in existing:
+                conn.exec_driver_sql(f"ALTER TABLE {table} RENAME COLUMN {old_col} TO {new_col}")
+        # 六階段定義表已不再使用：分類改為使用者自訂的知識庫資料夾
+        conn.exec_driver_sql("DROP TABLE IF EXISTS stages")
         for (table, column), ddl in wanted.items():
             existing = {
                 row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")

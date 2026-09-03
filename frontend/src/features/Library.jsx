@@ -180,7 +180,7 @@ function Chunks() {
   for (const c of list) {
     const key = c['文件 ID']
     if (!seen.has(key)) {
-      const g = { id: key, name: c.文件, stage: c.階段, items: [] }
+      const g = { id: key, name: c.文件, kb: c.知識庫, items: [] }
       seen.set(key, g); groups.push(g)
     }
     seen.get(key).items.push(c)
@@ -229,7 +229,7 @@ function Chunks() {
                   <b title={g.name}>{g.name}</b>
                   <span>{g.items.length} 個切片</span>
                 </div>
-                {g.stage !== '未分類' && <span className="tag">{g.stage}</span>}
+                {g.kb !== '通用' && <span className="tag">{g.kb}</span>}
               </div>
 
               {isOpen(g.id) && g.items.map((c) => (
@@ -261,7 +261,7 @@ function Chunks() {
               <div>
                 <b>{detail.file_name}</b>
                 <div className="crumb">
-                  {detail.locator} · {detail.char_count} 字 · 階段 {detail.stage_code || '未分類'}
+                  {detail.locator} · {detail.char_count} 字 · 知識庫 {detail.kb || '通用'}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -370,8 +370,10 @@ function Indexing() {
   const [log, setLog] = useState([])
   const [busy, setBusy] = useState(false)
   const [files, setFiles] = useState(null)
-  const [stage, setStage] = useState('')
-  const [stages, setStages] = useState([])
+  // 上傳目標：'' = 通用（根目錄）；'__new' = 新建知識庫，名稱在 newKb
+  const [kb, setKb] = useState('')
+  const [newKb, setNewKb] = useState('')
+  const [kbs, setKbs] = useState([])
   const [docs, setDocs] = useState([])
   // 上傳的回饋要顯示在上傳區，不能跟索引 log 共用一個位置——
   // 訊息出現在別的面板裡，使用者不會把它跟自己剛按的按鈕連起來。
@@ -383,7 +385,8 @@ function Indexing() {
     api.get('/api/admin/index-status').then(setInfo),
     loadDocs(),
   ])
-  useEffect(() => { load(); api.get('/api/stages').then((d) => setStages(d.stages)) }, [])
+  const loadKbs = () => api.get('/api/kbs').then((d) => setKbs(d.kbs))
+  useEffect(() => { load(); loadKbs() }, [])
 
   /* 刪除是不可回復的，而且會一併清掉切片與向量——一定要確認。
      訊息裡寫出切片數，讓管理員知道自己刪掉的是什麼份量的東西。 */
@@ -450,7 +453,8 @@ function Indexing() {
       const fd = new FormData()
       for (const f of files) fd.append('files', f)
       const params = new URLSearchParams()
-      if (stage) params.set('stage_code', stage)
+      if (kb === '__new') { if (!newKb.trim()) { setMsg('請輸入新知識庫的名稱'); setBusy(false); return } params.set('new_kb', newKb.trim()) }
+      else if (kb) params.set('kb', kb)
       if (forceVlm) params.set('force_vlm', 'true')
       const q = params.toString() ? `?${params}` : ''
       const r = await api.upload(`/api/admin/upload${q}`, fd)
@@ -486,7 +490,7 @@ function Indexing() {
             安裝視覺模型後重新索引即可讀取：<code>ollama pull {info.recommended_vlm}</code>
           </div>
           <div style={{ marginTop: 6 }}>
-            現在就索引也沒問題——圖片型檔案會保留檔名與階段歸類，只是圖片裡的文字不會進入索引。
+            現在就索引也沒問題——圖片型檔案會保留檔名與知識庫歸類，只是圖片裡的文字不會進入索引。
           </div>
         </div>
       )}
@@ -494,10 +498,14 @@ function Indexing() {
       <div className="panel">
         <div className="phead"><b>上傳文件</b></div>
         <div style={{ padding: 15, display: 'flex', gap: 9, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select className="sel" value={stage} onChange={(e) => setStage(e.target.value)}>
-            <option value="">（未分類）</option>
-            {stages.map((s) => <option key={s.code} value={s.code}>{s.code} — {s.name_zh}</option>)}
+          <select className="sel" value={kb} onChange={(e) => setKb(e.target.value)}>
+            <option value="">通用（根目錄）</option>
+            {kbs.filter((k) => !k.is_general).map((k) => <option key={k.name} value={k.name}>{k.label}（{k.doc_count} 份）</option>)}
+            <option value="__new">＋ 新建知識庫…</option>
           </select>
+          {kb === '__new' && (
+            <input className="inp" placeholder="新知識庫名稱" value={newKb} onChange={(e) => setNewKb(e.target.value)} style={{ marginTop: 6, width: '100%' }} />
+          )}
           {/* accept 讓檔案選擇器預設只列得出支援的格式，
               少一次「選了才被退回」的來回。清單來自後端，不在前端寫死。 */}
           <input type="file" multiple
@@ -552,7 +560,7 @@ function Indexing() {
         </div>
 
         <div style={{ padding: '0 15px 14px', fontSize: 11.5, color: 'var(--ink-3)', lineHeight: 1.7 }}>
-          選擇階段會存進該階段的子資料夾，檢索時就能用階段過濾。
+          選擇知識庫會存進對應的子資料夾，問答時就能限定範圍。不確定的先放通用，之後隨時可以搬。
           直接用檔案總管把檔案複製到 <code>{info.root}</code> 效果相同。
           <br />
           <b>其他副檔名會被擋下並在上傳結果列出原因</b>——不會靜默略過。
@@ -610,7 +618,7 @@ function Indexing() {
             <div className="rinfo">
               <b>{d.file_name}</b>
               <span>
-                {d.stage_code && <span className="tag" style={{ marginRight: 6 }}>{d.stage_code}</span>}
+                {d.kb && <span className="tag" style={{ marginRight: 6 }}>{d.kb}</span>}
                 {(d.file_size / 1024).toFixed(0)} KB
                 {d.indexed
                   ? ` · ${d.chunk_count} 個切片 · ${d.indexed_at}`
@@ -662,7 +670,7 @@ function Errors() {
           {table(data.needs_vlm)}
           <div style={{ padding: 12, fontSize: 11.5, color: 'var(--ink-3)' }}>
             <b>這些檔案沒有問題</b>，只是內容在影像裡、需要視覺模型才讀得出來。
-            檔名與階段歸類仍然保留，可以用關鍵字找到。
+            檔名與知識庫歸類仍然保留，可以用關鍵字找到。
           </div>
         </div>
       )}

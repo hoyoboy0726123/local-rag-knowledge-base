@@ -19,7 +19,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
-from backend.api import admin, auth, chat, stages  # noqa: E402
+from backend.api import admin, auth, chat, kbs  # noqa: E402
 from database import get_session, init_db  # noqa: E402
 
 app = FastAPI(
@@ -30,7 +30,7 @@ app = FastAPI(
 
 app.include_router(auth.router)
 app.include_router(chat.router)
-app.include_router(stages.router)
+app.include_router(kbs.router)
 app.include_router(admin.router)
 
 
@@ -56,15 +56,21 @@ def _warn_default_passwords() -> None:
         ]
     if not weak:
         return
-    bar = "!" * 72
-    print(bar, flush=True)
-    print(f"  WARNING: {len(weak)} account(s) still use the default password "
-          f"'{DEMO_PASSWORD}'", flush=True)
-    print(f"    {', '.join(weak)}", flush=True)
-    print("  This password is published in README.md. Anyone on the LAN can "
-          "log in.", flush=True)
-    print("  Change it in the app: 個人設定 -> 修改密碼", flush=True)
-    print(bar, flush=True)
+    # **全部用 ASCII，而且包在 try 裡。** 這段曾經印了中文，stderr 被導向檔案時
+    # Python 走 cp1252 就 UnicodeEncodeError，整個 startup 失敗、服務起不來——
+    # 一則警告把主程式拖垮，本末倒置。警告再重要也不能有讓啟動失敗的可能。
+    try:
+        bar = "!" * 72
+        print(bar, flush=True)
+        print(f"  WARNING: {len(weak)} account(s) still use the default password "
+              f"'{DEMO_PASSWORD}'", flush=True)
+        print(f"    {', '.join(weak)}", flush=True)
+        print("  This password is published in README.md. Anyone on the LAN can "
+              "log in.", flush=True)
+        print("  Change it in the app: Profile page -> Change password", flush=True)
+        print(bar, flush=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @app.on_event("startup")
