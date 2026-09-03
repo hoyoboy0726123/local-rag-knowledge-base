@@ -86,6 +86,36 @@ function Trace({ search }) {
   )
 }
 
+/* 一輪問答的全部檢索軌跡。
+   **0 段的不隱藏，只摺起來。** 隱藏很誘人——實測一輪五次檢索只有一次有內容，
+   其餘四個膠囊純粹是噪音。但這套系統的承諾是「每項結論均可追溯」，而 0 段
+   本身帶著資訊：它代表 AI 試過其他角度而沒找到，這正好回答「查得到全部嗎」。
+   回答很慢的時候，這排膠囊也是唯一能解釋「它剛才在做什麼」的東西。
+
+   所以預設只顯示有內容的，其餘收成一行摘要；點開時**依原始順序**攤開全部，
+   因為要判斷 AI 的思路時，先後次序是有意義的。 */
+function Traces({ searches }) {
+  const [open, setOpen] = useState(false)
+  const empty = searches.filter((s) => !s.hits)
+  if (!empty.length) return searches.map((s, j) => <Trace search={s} key={j} />)
+  if (open) {
+    return (
+      <>
+        {searches.map((s, j) => <Trace search={s} key={j} />)}
+        <button className="trace more" onClick={() => setOpen(false)}>收合檢索紀錄</button>
+      </>
+    )
+  }
+  return (
+    <>
+      {searches.filter((s) => s.hits > 0).map((s, j) => <Trace search={s} key={j} />)}
+      <button className="trace more" onClick={() => setOpen(true)}>
+        ◐ 另外查了 {empty.length} 次，沒有新內容 ▾
+      </button>
+    </>
+  )
+}
+
 function Answer({ text, onCite }) {
   return (
     <div className="ans">
@@ -374,9 +404,7 @@ export default function Chat() {
               <div className="msg" key={i}>
                 <div className="av ai">◈</div>
                 <div className="abody">
-                  {(m.searches || []).map((s, j) => (
-                    <Trace search={s} key={j} />
-                  ))}
+                  <Traces searches={m.searches || []} />
                   <Answer text={m.content} onCite={gotoCite} />
                   {/* 答案不完整時的補救。用前一則使用者訊息當問題重問，
                       使用者不必自己再打一次。已經用過更多脈絡的就不再提供，
@@ -438,9 +466,7 @@ export default function Chat() {
               <div className="msg">
                 <div className="av ai">◈</div>
                 <div className="abody">
-                  {live.searches.map((s, j) => (
-                    <Trace search={s} key={j} />
-                  ))}
+                  <Traces searches={live.searches} />
                   {live.text
                     ? <Answer text={live.text} onCite={() => {}} />
                     : <div style={{ color: 'var(--ink-3)', fontSize: 13 }}>思考中…</div>}

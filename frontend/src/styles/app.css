@@ -234,6 +234,13 @@
   flex: 0 1 auto; min-width: 0; max-width: 42ch;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 摺疊 0 段檢索的那顆。做成按鈕但長得跟膠囊一樣，
+   讓「可以點開」這件事看得出來，又不至於搶走答案的注意力。 */
+button.trace.more {
+  cursor: pointer; color: var(--ink-3); font-family: inherit;
+  white-space: nowrap;
+}
+button.trace.more:hover { color: var(--accent); border-color: var(--accent-line); }
 
 .ans { color: var(--ink-2); }
 .ans h1, .ans h2, .ans h3, .ans h4 { font-size: 13px; font-weight: 650; margin: 15px 0 6px; color: var(--ink); }
