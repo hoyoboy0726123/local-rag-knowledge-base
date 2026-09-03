@@ -550,6 +550,21 @@ _long = "衝擊測試" * 400
 check("無換行長句仍會被切開",
       all(len(c["content"]) <= 200 for c in chunk_text(_long, 200, 40, "x.md")))
 
+# ----------------------------------------------------------------- 設定預設值
+#
+# num_ctx 的預設值寫在兩個地方：models.DEFAULT_SETTINGS（建立資料庫時寫入）
+# 與 ollama_client.DEFAULT_NUM_CTX（讀不到設定時的 fallback）。
+# **不一致的後果是安靜的**——提示詞超過視窗時 Ollama 直接截掉前面的內容，
+# 不報錯，只是答案突然變得不對。所以釘住它。
+from models import DEFAULT_SETTINGS  # noqa: E402
+from services.ollama_client import DEFAULT_NUM_CTX  # noqa: E402
+
+check("num_ctx 有進 DEFAULT_SETTINGS", "num_ctx" in DEFAULT_SETTINGS)
+check("兩處的 num_ctx 預設值一致",
+      DEFAULT_SETTINGS.get("num_ctx") == str(DEFAULT_NUM_CTX),
+      f"{DEFAULT_SETTINGS.get('num_ctx')} vs {DEFAULT_NUM_CTX}")
+
+
 # ----------------------------------------------------------------- 追問補主詞
 #
 # 系統指示第 1 條要求模型自己把「還有嗎」補成有主題的 query，但那條要跟另外

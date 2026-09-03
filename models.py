@@ -235,6 +235,10 @@ DEFAULT_SETTINGS = {
     "chunk_size": "500",
     "chunk_overlap": "80",
     "top_k": "6",
+    # 送進 Ollama 的上下文視窗。**預設值必須跟 ollama_client.DEFAULT_NUM_CTX
+    # 一致**——兩邊分開放著遲早會對不上，而不一致的後果是安靜的：提示詞超過
+    # 視窗時 Ollama 直接截掉前面的內容，不會報錯，只是答案突然變得不對。
+    "num_ctx": "8192",
     "blocklist": "",
     "db_version": "1",
 }
