@@ -29,8 +29,11 @@ MAX_NUM_CTX = 32768
 # 對某些列舉題 6 段只涵蓋 2/6、30 段才 6/6。但 30 段約 15,000 字，會把
 # num_ctx 撐到 16384~32768，8 GB 顯卡有四成的層被丟到 CPU。所以那個自動
 # 機制被移除，改成讓使用者自己決定要完整還是要快——前端會依數值顯示警告。
+# 上限 20，不是 30。實測兩題列舉題（料件種類、壓力測試）在 6～20 段同一個水準，
+# 30 段反而最差（一次涵蓋 0/9、花 47 秒）：餵越多模型摘要得越狠，而且相關性
+# 把關會把一整批多數不相關的段落整個否決。30 只剩代價沒有收益，所以不開放。
 MIN_TOP_K = 1
-MAX_TOP_K = 30
+MAX_TOP_K = 20
 
 
 class KeywordsBody(BaseModel):
@@ -52,6 +55,7 @@ class ModelsBody(BaseModel):
     vlm_model: str | None = None
     num_ctx: int | None = None
     top_k: int | None = None
+    section_answer: bool | None = None
 
 
 # ------------------------------------------------------------------ 切片
@@ -350,6 +354,7 @@ def models(_: dict = Depends(require_admin)) -> dict:
             "vlm_model": get_setting("vlm_model"),
             "num_ctx": get_int_setting("num_ctx", ollama_client.DEFAULT_NUM_CTX),
             "top_k": get_int_setting("top_k", 6),
+            "section_answer": get_setting("section_answer", "0") == "1",
         },
         "supports_tools": ollama_client.supports_tools() if status_.alive else False,
     }
@@ -383,6 +388,14 @@ def update_models(body: ModelsBody, _: dict = Depends(require_admin)) -> dict:
         if str(value) != get_setting("top_k"):
             set_setting("top_k", str(value))
             changed.append("top_k")
+
+    # 逐章節作答：預設關閉。每個章節一次模型呼叫，8 個章節約 1～3 分鐘，
+    # 拿時間換列舉的完整度；記憶體壓力反而比單次餵多段小。
+    if body.section_answer is not None:
+        value = "1" if body.section_answer else "0"
+        if value != get_setting("section_answer", "0"):
+            set_setting("section_answer", value)
+            changed.append("section_answer")
     return {"changed": changed}
 
 

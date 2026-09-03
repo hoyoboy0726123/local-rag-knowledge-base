@@ -71,7 +71,7 @@ function ContextField({ value, onChange }) {
    2/6、30 段才 6/6——但 30 段約 15,000 字，會把 num_ctx 撐到 16K～32K，
    8 GB 顯卡有四成的層被丟到 CPU。所以改成讓使用者自己決定要完整還是要快，
    警告依數值分級，讓代價在調的當下就看得到。 */
-const TOPK_OPTIONS = [4, 6, 8, 10, 12, 16, 20, 30]
+const TOPK_OPTIONS = [4, 6, 8, 10, 12, 16, 20]
 
 function TopKField({ value, onChange }) {
   const list = TOPK_OPTIONS.includes(value) ? TOPK_OPTIONS : [value, ...TOPK_OPTIONS].sort((a, b) => a - b)
@@ -84,20 +84,15 @@ function TopKField({ value, onChange }) {
         {list.map((o) => <option key={o} value={o}>{o} 段（約 {(o * 500).toLocaleString()} 字）</option>)}
       </select>
       <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
-        一次檢索交給模型的切片數。列舉型問題（「有哪些」「列出全部」）段數不夠會漏項；
-        但段數越多提示詞越長，上下文視窗會跟著放大、記憶體佔用跟著上升。
-        預設 6 是速度與完整性的折衷。
+        一次檢索交給模型的切片數。<b>調高不保證答案更完整</b>——實測兩題列舉題在
+        6～20 段是同一個水準，段數越多模型反而摘要得越狠。想把清單列全，請改開下方的
+        「逐章節作答」。預設 6。
       </div>
       {value > 12 && (
         <div className="note amber" style={{ marginTop: 6 }}>
-          ⚠️ {value} 段約 {chars.toLocaleString()} 字，上下文視窗會升到 16K 以上。
-          <b>8 GB 顯卡實測會有約四成的模型層被移到 CPU 執行，回答時間可能拉長到數倍。</b>
-          建議只在需要完整列舉時暫時調高，用完調回。
-        </div>
-      )}
-      {value > 6 && value <= 12 && (
-        <div className="note" style={{ marginTop: 6, fontSize: 11 }}>
-          {value} 段約 {chars.toLocaleString()} 字，多數情況仍在 8K 視窗內；列舉題會更完整，每題約多幾秒。
+          ⚠️ {value} 段約 {chars.toLocaleString()} 字，上下文視窗會升到 16K 以上；
+          <b>8 GB 顯卡實測會有約四成的模型層被移到 CPU 執行，回答時間可能拉長到數倍</b>，
+          而且完整度並不會因此變好。除非你的文件切片特別短，否則不建議。
         </div>
       )}
     </div>
@@ -164,6 +159,27 @@ export default function Models() {
                     hint="解析圖片與掃描件用。換模型後請按下方按鈕自檢。" />
             <ContextField value={data.current.num_ctx} onChange={change} />
             <TopKField value={data.current.top_k ?? 6} onChange={change} />
+            <div className="field">
+              <label>
+                <input type="checkbox" checked={!!data.current.section_answer}
+                       onChange={(e) => change('section_answer', e.target.checked)} />
+                {' '}逐章節作答（列舉型問題）
+              </label>
+              <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                問「有哪些」「列出全部」這類問題時，改由程式把檢索到的章節列成清單，
+                模型一次只描述一個章節，最後由程式組裝。這是目前<b>唯一實測能拉高列舉完整度</b>的方法——
+                單次餵再多段，模型都會自己摘要掉一半。
+              </div>
+              {data.current.section_answer
+                ? <div className="note amber" style={{ marginTop: 6 }}>
+                    ⚠️ 每個章節一次模型呼叫，最多 8 個章節，<b>一題約 1～3 分鐘</b>
+                    （依生成模型速度而定）。記憶體壓力比調高段數小——每次只餵一個章節——
+                    但總時間長很多。只影響列舉型問題，一般問答不受影響。
+                  </div>
+                : <div className="note" style={{ marginTop: 6, fontSize: 11 }}>
+                    目前關閉：列舉題走一般流程，快但可能漏項；答案不完整時可再追問「還有嗎」。
+                  </div>}
+            </div>
             {saved && <div className="note accent">{saved}</div>}
 
             {/* 重排序是選配：小文件用不到，大型規格書才有明顯差別。

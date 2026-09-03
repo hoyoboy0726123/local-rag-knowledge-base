@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 
+from database import get_setting
 from services import ollama_client, rag_service
 
 # 即使帶了 think=False，gemma4 偶爾仍會把推理通道的標記漏進正文，
@@ -488,6 +489,109 @@ def _run_search(query: str, stage_code: str | None, citations: _Citations,
     return f"檢索到 {len(chunks)} 段內容：\n\n{body}{warning}{tail}", len(chunks), False
 
 
+# ------------------------------------------------------------ 逐章節作答
+#
+# 列舉型問題（「有哪些」「列出全部」）的失敗模式是：模型讀了 20 段卻只列出
+# 5 項。實測調 top_k 完全沒用——6 到 20 段同一個水準，30 段反而最差（一次
+# 0/9），因為餵越多它摘要得越狠，而且相關性把關會把一整批多數不相關的段落
+# 整個否決。
+#
+# 這裡改成**不讓模型做彙整**：清單由程式依 `section_of` 分組產生（確定性），
+# 模型只負責「描述單一章節的內容」——那是它做得好的事。每次呼叫只餵一個章節，
+# 歸屬在結構上不可能出錯。
+#
+# 這個機制曾經存在、後來被移除，理由是當時它把 30 段一次餵進去，num_ctx
+# 撐到 32K、8 GB 顯卡四成的層落到 CPU。現在的版本**每次只餵一個章節**（通常
+# 1–3 段），記憶體壓力反而比單次 top_k=6 還小；代價是時間——每個章節一次
+# 模型呼叫，8 個章節約 1–3 分鐘。所以預設關閉，由管理員決定要不要用時間換完整。
+SECTION_TOP_K = 30          # 只用來撈候選；每次生成只餵一個章節
+MAX_SECTIONS = 8            # 超過的章節在結尾明列「未展開」，不靜靜丟掉
+MIN_SECTIONS_TO_SPLIT = 3   # 章節太少不值得拆，一次問完更快也沒有混淆可言
+
+_ENUMERATION = re.compile(
+    r"有哪些|哪些|列出|列舉|全部|所有|各項|清單|一覽|完整|總共|幾種|幾個"
+    r"|\ball\b|\blist\b|\bevery\b", re.IGNORECASE)
+
+
+def _is_enumeration(question: str) -> bool:
+    """這是不是「要把東西列全」的問題。只認字面，不問模型——理由同 _FOLLOW_UP。"""
+    return bool(_ENUMERATION.search(question))
+
+
+SECTION_SYSTEM = (
+    "你是知識庫助理。**只依據使用者提供的這一個章節的內容作答。**\n"
+    "規則：\n"
+    "1. 這段內容全部屬於同一個章節。不要提到、不要推測其他章節的內容。\n"
+    "2. 問題問到的項目若本章節沒有提供，明講「本章節未提供」，"
+    "**絕對不可以從別處推測或填補數值**。\n"
+    "3. 每個結論後面標註來源編號 [n]，沿用內容裡給的編號，不要自己編。\n"
+    "4. 回答要短。條列，只講與問題直接相關的內容，不要重述整個章節。\n"
+    "5. 繁體中文。不要用 LaTeX。"
+)
+
+
+def _answer_by_section(question: str, stage_code: str | None, citations: _Citations):
+    """列舉型問題：依章節拆開、一節問一次、程式負責組裝。
+
+    **這保證的是「檢索到的章節都會被列出」，不是「知識庫裡所有的都會被列出」**——
+    後者取決於檢索，程式無法保證，所以結尾會誠實說明涵蓋範圍。
+    """
+    chunks, error = rag_service.retrieve(question, stage_code, top_k=SECTION_TOP_K)
+    if error:
+        yield {"type": "error", "message": f"檢索失敗：{error}"}
+        return
+    if not chunks:
+        yield {"type": "text", "piece": NO_RELEVANT_ANSWER}
+        yield {"type": "done", "answer": NO_RELEVANT_ANSWER, "chunk_ids": [], "searches": 1}
+        return
+
+    for chunk in chunks:
+        citations.number(chunk.chunk_id)
+    yield {"type": "search", "query": question, "stage": stage_code,
+           "hits": len(chunks), "seen_only": False}
+
+    groups: dict[tuple[str, str], list] = {}
+    for chunk in chunks:
+        groups.setdefault((chunk.file_name, rag_service.section_of(chunk.locator)), []).append(chunk)
+    # 用重排序分數挑章節，不要用向量距離——距離的鑑別力太差，
+    # 實測會把真正切題的章節排到第 12 名而選進不相關的。
+    ordered = sorted(groups.items(), key=lambda kv: -rag_service.best_score(kv[1]))
+    picked, dropped = ordered[:MAX_SECTIONS], ordered[MAX_SECTIONS:]
+
+    header = f"檢索到 **{len(ordered)} 個相關章節**"
+    if dropped:
+        header += f"（以下展開最相關的 {len(picked)} 個）"
+    parts = [header + "：\n\n"]
+    yield {"type": "text", "piece": parts[0]}
+
+    for (file_name, section), members in picked:
+        title = section or file_name
+        block = "\n\n".join(
+            f"[{citations.number(c.chunk_id)}] {c.locator}\n{c.content}" for c in members)
+        prompt = (f"章節：{title}（出自 {file_name}）\n\n內容：\n{block}\n\n---\n\n"
+                  f"問題：{question}\n\n請只根據上面這個章節的內容回答。")
+        text, err = ollama_client.generate(prompt, system=SECTION_SYSTEM, num_predict=1200)
+        body = rag_service.apply_blocklist(_strip_leak(text).strip()) or "（本章節未取得內容）"
+        if err:
+            body = f"（此章節處理失敗：{err[:80]}）"
+        piece = f"### {title}\n\n{body}\n\n"
+        parts.append(piece)
+        yield {"type": "text", "piece": piece}
+
+    if dropped:
+        names = "、".join(s or f for (f, s), _ in dropped)
+        tail = (f"\n> 另有 {len(dropped)} 個相關章節未展開：{names}。"
+                f"若需要它們的細節，請針對該章節單獨提問。\n")
+        parts.append(tail)
+        yield {"type": "text", "piece": tail}
+
+    note = ("\n> 以上涵蓋的是**本次檢索到的章節**。知識庫中可能還有未被檢索到的相關內容，"
+            "若懷疑有遺漏，可換關鍵詞再問一次。\n")
+    parts.append(note)
+    yield {"type": "text", "piece": note}
+    yield {"type": "done", "answer": "".join(parts), "chunk_ids": citations.chunk_ids, "searches": 1}
+
+
 def answer(question: str, history: list[dict] | None = None,
            stage_code: str | None = None, wide: bool = False):
     """執行一次問答。逐一 yield 事件字典：
@@ -502,6 +606,13 @@ def answer(question: str, history: list[dict] | None = None,
     縮小檢索範圍是使用者的決定，模型無權代勞（見 SEARCH_TOOL 的說明）。
     """
     citations = _Citations()
+    # 逐章節作答：預設關閉，管理員在「模型與設定」打開。只接列舉型問題，
+    # 而且要先把追問補回主題（「還有嗎」本身不是列舉句，補完可能才是）。
+    if get_setting("section_answer", "0") == "1":
+        resolved = _resolve_follow_up(question, history)
+        if _is_enumeration(resolved):
+            yield from _answer_by_section(resolved, stage_code, citations)
+            return
     messages = (
         [{"role": "system", "content": SYSTEM_INSTRUCTION}]
         + _history_messages(history)

@@ -278,7 +278,7 @@ after = call("/api/admin/models", ADMIN)[1]["current"]["embed_model"]
 _orig_topk = call("/api/admin/models", ADMIN)[1]["current"].get("top_k")
 check("models 回傳 top_k", isinstance(_orig_topk, int), str(_orig_topk))
 call("/api/admin/models", ADMIN, "PUT", {"top_k": 99})
-check("top_k 超過 30 被夾到 30", call("/api/admin/models", ADMIN)[1]["current"]["top_k"] == 30)
+check("top_k 超過 20 被夾到 20（30 實測反而更差，不開放）", call("/api/admin/models", ADMIN)[1]["current"]["top_k"] == 20)
 call("/api/admin/models", ADMIN, "PUT", {"top_k": 0})
 check("top_k 低於 1 被夾到 1", call("/api/admin/models", ADMIN)[1]["current"]["top_k"] == 1)
 call("/api/admin/models", ADMIN, "PUT", {"top_k": _orig_topk or 6})
@@ -896,6 +896,71 @@ check("重試成功採用新結果", _text == FULL and not _short, _text[:40])
 (_text, _err, _short), _prompts = _fake_vlm(["01 CPU 等等。"])
 check("重試仍省略要示警", _short is True)
 check("重試仍省略要保留內容", _text.strip() != "", _text[:40])
+
+# ------------------------------------------------- 逐章節作答
+#
+# 這個機制曾被移除（一次餵 30 段撐爆 num_ctx），現在以「每次只餵一個章節」的
+# 形式加回來，預設關閉。測試守三件事：只在開關開且問題是列舉句時才啟動、
+# 章節清單由程式產生且有上限、丟掉的章節要明列不能靜靜消失。
+from services.agent_service import _is_enumeration, _answer_by_section, _Citations  # noqa: E402
+from services.rag_service import RetrievedChunk  # noqa: E402
+
+for _q in ["有哪些壓力測試", "列出全部的測試項目", "料件有哪些種類", "總共幾種", "list all tests"]:
+    check(f"列舉句判定：{_q}", _is_enumeration(_q))
+for _q in ["壓力測試的溫度條件", "DVT 是什麼", "今天午餐吃什麼"]:
+    check(f"非列舉句不誤判：{_q}", not _is_enumeration(_q))
+
+
+def _mk(cid, section, text, score):
+    return RetrievedChunk(chunk_id=cid, doc_id=1, seq=cid, content=text,
+                          locator=f"x.pdf › {section} #{cid}", file_name="x.pdf",
+                          file_path="x.pdf", stage_code=None, distance=1.0, rerank_score=score)
+
+
+def _drive_sections(chunks):
+    """stub 掉檢索與生成，只驗分組／上限／組裝邏輯。生成只是回聲，不依賴模型。"""
+    real_r, real_g = _ag.rag_service.retrieve, _ag.ollama_client.generate
+    prompts = []
+    _ag.rag_service.retrieve = lambda q, s, top_k=None: (chunks, "")
+    _ag.ollama_client.generate = lambda p, system="", model=None, num_predict=None: (prompts.append(p), ("- 項目 [1]", ""))[1]
+    try:
+        evs = list(_answer_by_section("有哪些測試", None, _Citations()))
+    finally:
+        _ag.rag_service.retrieve, _ag.ollama_client.generate = real_r, real_g
+    return evs, prompts
+
+
+# 10 個章節、每章 1 段；分數遞減，讓排序可預期
+_chunks = [_mk(i, f"{i}.1 Test {i}", f"內容 {i}", 10 - i) for i in range(1, 11)]
+_evs, _prompts = _drive_sections(_chunks)
+_done = [e for e in _evs if e["type"] == "done"][0]
+check("每個章節各問一次、受 MAX_SECTIONS 上限", len(_prompts) == _ag.MAX_SECTIONS, f"{len(_prompts)} 次")
+check("章節依重排序分數排序（最高分先）", "1.1 Test 1" in _prompts[0] and "8.1 Test 8" in _prompts[-1])
+check("每次只餵那一個章節的內容", "內容 1" in _prompts[0] and "內容 2" not in _prompts[0])
+check("丟掉的章節在結尾明列", "另有 2 個相關章節未展開" in _done["answer"] and "9.1 Test 9" in _done["answer"])
+check("結尾誠實說明只涵蓋檢索到的章節", "本次檢索到的章節" in _done["answer"])
+check("done 帶回所有引用的切片", len(_done["chunk_ids"]) == 10)
+
+# 開關關閉時，answer() 不該走這條路徑——即使問題是列舉句
+_real_get = _ag.get_setting
+_ag.get_setting = lambda k, d="": "0" if k == "section_answer" else _real_get(k, d)
+_seen = []
+_real_abs = _ag._answer_by_section
+_ag._answer_by_section = lambda *a, **k: (_seen.append(1), iter(()))[1]
+try:
+    _asked = _drive_answer("有哪些測試", {"有哪些測試": 6})
+    check("開關關閉時不走逐章節路徑", not _seen and _asked)
+finally:
+    _ag.get_setting, _ag._answer_by_section = _real_get, _real_abs
+
+# API：預設關閉、可切換、可還原
+_cur = call("/api/admin/models", ADMIN)[1]["current"]
+check("models 回傳 section_answer", "section_answer" in _cur)
+_orig_sa = bool(_cur["section_answer"])
+call("/api/admin/models", ADMIN, "PUT", {"section_answer": True})
+check("section_answer 可開啟", call("/api/admin/models", ADMIN)[1]["current"]["section_answer"] is True)
+call("/api/admin/models", ADMIN, "PUT", {"section_answer": _orig_sa})
+check("section_answer 還原", call("/api/admin/models", ADMIN)[1]["current"]["section_answer"] == _orig_sa)
 
 print("\n" + "=" * 56)
 print(f"  通過 {_passed} 項，失敗 {_failed} 項")
