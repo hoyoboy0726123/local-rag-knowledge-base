@@ -272,6 +272,17 @@ check("模型設定可讀取", status == 200 and data.get("current", {}).get("em
 before = data["current"]["embed_model"]
 call("/api/admin/models", ADMIN, "PUT", {})
 after = call("/api/admin/models", ADMIN)[1]["current"]["embed_model"]
+
+# top_k 可調，但夾在 1..30——30 段約 15,000 字，會把 num_ctx 撐到 16K 以上，
+# 8 GB 顯卡有四成的層落到 CPU。超過上限不是報錯而是夾住，前端另有分級警告。
+_orig_topk = call("/api/admin/models", ADMIN)[1]["current"].get("top_k")
+check("models 回傳 top_k", isinstance(_orig_topk, int), str(_orig_topk))
+call("/api/admin/models", ADMIN, "PUT", {"top_k": 99})
+check("top_k 超過 30 被夾到 30", call("/api/admin/models", ADMIN)[1]["current"]["top_k"] == 30)
+call("/api/admin/models", ADMIN, "PUT", {"top_k": 0})
+check("top_k 低於 1 被夾到 1", call("/api/admin/models", ADMIN)[1]["current"]["top_k"] == 1)
+call("/api/admin/models", ADMIN, "PUT", {"top_k": _orig_topk or 6})
+check("top_k 還原", call("/api/admin/models", ADMIN)[1]["current"]["top_k"] == (_orig_topk or 6))
 check("空的更新請求不會動到既有設定", before == after, f"{before} -> {after}")
 
 status, data = call("/api/admin/errors", ADMIN)
@@ -803,6 +814,26 @@ try:
           _seen and _r == "還有哪些料件種類", f"{_r!r} called={bool(_seen)}")
 finally:
     _ag.rag_service.condense_question = _real_condense
+
+
+# ----------------------------------------------------------------- 殘骸表格過濾
+#
+# 簡報轉 PDF 的文字層，表格會被 pdfminer 拆成每一兩列就重開一個表的殘骸。
+# 開了視覺解析後同一份文件同時有殘骸與 VLM 轉錄的完整表，實測檢索撈到殘骸、
+# 模型照抄一坨垃圾進答案。過濾只在有 VLM 版本時才做，永遠不會丟掉唯一的內容。
+from services.ingest_service import _strip_broken_tables  # noqa: E402
+
+BROKEN = ("原物料介紹\n| 類別代號 | 類 別 名 | 稱 |\n| ---- | ----- | --- |\nDISPLAY\n"
+          "| 01 CPU |  |  |\n| ------ | --- | --- |\n(LCD/OLED/EPD)\n"
+          "| 02 CHIPSET |  |  |\n| ---------- | --- | --- |\nPOWER MODULE")
+CLEAN = "| 大類 | 敘述 |\n| --- | --- |\n| 01 | CPU |\n| 02 | CHIPSET |\n| 03 | MEMORY |\n| 04 | SYS MODULE |"
+_out = _strip_broken_tables(BROKEN + "\n\n" + CLEAN + "\n\n這是一般段落。")
+check("殘骸表格被整段移除", "DISPLAY" not in _out and "01 CPU |" not in _out, _out[:80])
+check("正常表格原樣保留", "| 04 | SYS MODULE |" in _out)
+check("純文字段落不受影響", "這是一般段落。" in _out)
+# 單一分隔線的正常小表（1 條分隔線配 2 列）比值 0.5，不該被當殘骸——門檻是「超過」
+_tiny = "| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |"
+check("小表格不誤殺", _strip_broken_tables(_tiny) == _tiny)
 
 
 # ----------------------------------------------------------------- VLM 省略偵測

@@ -66,6 +66,44 @@ function ContextField({ value, onChange }) {
   )
 }
 
+/* 每次檢索餵給模型幾段。預設 6，上限 30。
+   曾經有「列舉型問題自動放大到 30 段」的機制，實測對某些列舉題 6 段只涵蓋
+   2/6、30 段才 6/6——但 30 段約 15,000 字，會把 num_ctx 撐到 16K～32K，
+   8 GB 顯卡有四成的層被丟到 CPU。所以改成讓使用者自己決定要完整還是要快，
+   警告依數值分級，讓代價在調的當下就看得到。 */
+const TOPK_OPTIONS = [4, 6, 8, 10, 12, 16, 20, 30]
+
+function TopKField({ value, onChange }) {
+  const list = TOPK_OPTIONS.includes(value) ? TOPK_OPTIONS : [value, ...TOPK_OPTIONS].sort((a, b) => a - b)
+  const chars = value * 500
+  return (
+    <div className="field">
+      <label>每次檢索段數（top_k）</label>
+      <select className="sel" style={{ width: '100%' }} value={value}
+              onChange={(e) => onChange('top_k', Number(e.target.value))}>
+        {list.map((o) => <option key={o} value={o}>{o} 段（約 {(o * 500).toLocaleString()} 字）</option>)}
+      </select>
+      <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+        一次檢索交給模型的切片數。列舉型問題（「有哪些」「列出全部」）段數不夠會漏項；
+        但段數越多提示詞越長，上下文視窗會跟著放大、記憶體佔用跟著上升。
+        預設 6 是速度與完整性的折衷。
+      </div>
+      {value > 12 && (
+        <div className="note amber" style={{ marginTop: 6 }}>
+          ⚠️ {value} 段約 {chars.toLocaleString()} 字，上下文視窗會升到 16K 以上。
+          <b>8 GB 顯卡實測會有約四成的模型層被移到 CPU 執行，回答時間可能拉長到數倍。</b>
+          建議只在需要完整列舉時暫時調高，用完調回。
+        </div>
+      )}
+      {value > 6 && value <= 12 && (
+        <div className="note" style={{ marginTop: 6, fontSize: 11 }}>
+          {value} 段約 {chars.toLocaleString()} 字，多數情況仍在 8K 視窗內；列舉題會更完整，每題約多幾秒。
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Models() {
   const [data, setData] = useState(null)
   const [saved, setSaved] = useState('')
@@ -125,6 +163,7 @@ export default function Models() {
                     options={data.available} onChange={change}
                     hint="解析圖片與掃描件用。換模型後請按下方按鈕自檢。" />
             <ContextField value={data.current.num_ctx} onChange={change} />
+            <TopKField value={data.current.top_k ?? 6} onChange={change} />
             {saved && <div className="note accent">{saved}</div>}
 
             {/* 重排序是選配：小文件用不到，大型規格書才有明顯差別。

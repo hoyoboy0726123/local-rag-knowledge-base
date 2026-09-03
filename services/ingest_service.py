@@ -501,6 +501,40 @@ def _looks_scanned(path: Path, content: str) -> bool:
     return bool(pages) and len(content) / pages < SCANNED_CHARS_PER_PAGE
 
 
+# 表格區塊裡「分隔列 ÷ 資料列」超過這個值就視為碎掉了。
+#
+# 正常的 Markdown 表格是 1 條分隔線配 N 列資料，比值接近 1/N。實測全庫：
+#   一般 Markdown 0.14–0.18、正常文字 PDF 0.27、視覺解析輸出 0.11
+#   簡報轉 PDF 的文字層 **0.75** ← 每一兩列就重開一個表
+# 0.5 對兩群都留有餘裕。
+BROKEN_TABLE_RATIO = 0.5
+
+_TABLE_SEP = re.compile(r"^\s*\|[\s\-|:]+\|\s*$")
+
+
+def _strip_broken_tables(md: str) -> str:
+    """把文字層裡碎掉的表格區塊整段拿掉。**只在視覺解析成功時呼叫。**
+
+    簡報轉出的 PDF，表格的每個儲存格是獨立文字框，pdfminer 依座標順序讀，
+    欄列關係整個瓦解——名稱被踢成孤立行、代號沒有名字、每列自己重開一個表。
+    開了視覺解析之後，同一份文件同時有這份殘骸和 VLM 轉錄的完整表格，
+    兩者都被切片索引；實測檢索撈到殘骸那份，模型忠實照抄了一坨垃圾進答案。
+
+    只在有 VLM 版本時才過濾，這樣永遠不會丟掉唯一的一份內容。
+    以空行切區塊：殘骸表格是一整串沒有空行的表列與孤立文字交錯，會落在同一區塊。
+    """
+    kept = []
+    for block in md.split("\n\n"):
+        lines = [ln for ln in block.split("\n") if ln.strip()]
+        seps = sum(1 for ln in lines if _TABLE_SEP.match(ln))
+        rows = sum(1 for ln in lines
+                   if ln.lstrip().startswith("|") and not _TABLE_SEP.match(ln))
+        # 至少要像個表（有分隔線、有資料列）才進入判斷；純文字區塊一律保留
+        if seps >= 2 and rows and seps / rows > BROKEN_TABLE_RATIO:
+            continue
+        kept.append(block)
+    return "\n\n".join(kept)
+
 def _describe_once(data: bytes) -> tuple[str, str, bool]:
     """描述一張圖，發現被摘要就用更嚴格的提示詞重試一次。
 
@@ -840,6 +874,10 @@ def _extract_raw(path: Path, enable_vlm: bool, force_vlm: bool = False,
                     if progress:
                         progress(f"    ⚠ {path.name}：{note}")
         if extra:
+            # 視覺解析成功了，文字層裡碎掉的表格就沒有保留的理由——
+            # VLM 那份才是完整的，殘骸留著只會被檢索撈到、混進答案裡。
+            if content:
+                content = _strip_broken_tables(content)
             if full_transcript:
                 # 每一頁都轉錄成功時，文字層講的是同一件事，而且是品質較差的
                 # 那一份：抽取雙欄表格會錯行。實測「原物料總表」被拆成「18」、

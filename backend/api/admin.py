@@ -23,6 +23,15 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 MIN_NUM_CTX = 2048
 MAX_NUM_CTX = 32768
 
+# 每次檢索餵給模型幾段。預設 6，上限 30。
+#
+# 30 這個數字是有來歷的：曾經有「列舉型問題自動放大到 30 段」的機制，實測
+# 對某些列舉題 6 段只涵蓋 2/6、30 段才 6/6。但 30 段約 15,000 字，會把
+# num_ctx 撐到 16384~32768，8 GB 顯卡有四成的層被丟到 CPU。所以那個自動
+# 機制被移除，改成讓使用者自己決定要完整還是要快——前端會依數值顯示警告。
+MIN_TOP_K = 1
+MAX_TOP_K = 30
+
 
 class KeywordsBody(BaseModel):
     keywords: str
@@ -42,6 +51,7 @@ class ModelsBody(BaseModel):
     llm_model: str | None = None
     vlm_model: str | None = None
     num_ctx: int | None = None
+    top_k: int | None = None
 
 
 # ------------------------------------------------------------------ 切片
@@ -339,6 +349,7 @@ def models(_: dict = Depends(require_admin)) -> dict:
             "llm_model": get_setting("llm_model"),
             "vlm_model": get_setting("vlm_model"),
             "num_ctx": get_int_setting("num_ctx", ollama_client.DEFAULT_NUM_CTX),
+            "top_k": get_int_setting("top_k", 6),
         },
         "supports_tools": ollama_client.supports_tools() if status_.alive else False,
     }
@@ -366,6 +377,12 @@ def update_models(body: ModelsBody, _: dict = Depends(require_admin)) -> dict:
         if str(value) != get_setting("num_ctx"):
             set_setting("num_ctx", str(value))
             changed.append("num_ctx")
+
+    if body.top_k is not None:
+        value = max(MIN_TOP_K, min(int(body.top_k), MAX_TOP_K))
+        if str(value) != get_setting("top_k"):
+            set_setting("top_k", str(value))
+            changed.append("top_k")
     return {"changed": changed}
 
 
