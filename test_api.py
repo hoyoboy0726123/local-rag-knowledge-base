@@ -650,39 +650,73 @@ HIST = [
     {"role": "user", "content": "料件有哪些種類"},
     {"role": "assistant", "content": "料件可分為 01 CPU、02 CHIPSET 等大類。"},
 ]
-for _q in ["還有嗎", "還有呢", "還有其他的", "其他呢", "繼續", "再多說一點",
-           "更多", "然後呢", "接下來呢", "還有嗎？",
-           # 指示代名詞句型。這些原本要靠模型判斷，現在用結構認。
-           "那它呢", "那這個呢", "這個呢", "那 DVT 呢", "講清楚一點", "詳細一點"]:
-    check(f"追問補回主題：{_q}", _resolve_follow_up(_q, HIST) == "料件有哪些種類",
-          _resolve_follow_up(_q, HIST))
+FOLLOW_UPS = ["還有嗎", "還有呢", "還有其他的", "其他呢", "繼續", "再多說一點",
+              "更多", "然後呢", "接下來呢", "還有嗎？",
+              # 指示代名詞句型。用結構認，不問模型。
+              "那它呢", "那這個呢", "這個呢", "那 DVT 呢", "那 CPU 的次分類呢",
+              "講清楚一點", "詳細一點"]
+COMPLETE = ["今天午餐吃什麼", "請假流程是什麼", "料件有哪些種類", "壓力測試的條件",
+            "這份文件在說明什麼？", "那份規範的溫度上限是多少",
+            "這個專案的里程碑有哪些", "他們的分工怎麼安排"]
 
-# 完整的問句一律不動，即使它很短、即使它離題
-# **這組是防線，不是形式。** 誤判的代價是把使用者問的東西整個換掉——
-# 「今天午餐吃什麼」被改寫成前文主題，就會拿一段規格去回答一個閒聊問題。
-# 特別放進以指示代名詞開頭、但本身自帶主題的句子，守住新句型的邊界。
-for _q in ["今天午餐吃什麼", "請假流程是什麼", "料件有哪些種類", "壓力測試的條件",
-           "這份文件在說明什麼？", "那份規範的溫度上限是多少",
-           "這個專案的里程碑有哪些", "他們的分工怎麼安排"]:
-    check(f"完整問句不被改寫：{_q}", _resolve_follow_up(_q, HIST) == _q,
-          _resolve_follow_up(_q, HIST))
+# 追問處理拆成兩個決定，測試也照這樣拆：
+#
+#   A. 這句是不是追問？—— 純句型，**不 stub、不呼叫模型**，這是防線本體。
+#      這裡曾經改成問模型「單獨看得懂嗎」，實測它會把「今天午餐吃什麼」判成
+#      看不懂、改寫成前文主題，一個合法的拒答變成一整段潤滑油規格——而當時
+#      的測試把那個判斷 stub 掉了，所以完全沒看到。stub 掉不確定的部分，
+#      等於把測試的眼睛遮起來。
+#   B. 確定是追問了，補成什麼？—— 交給 condense_question。這一步 stub 是
+#      **可以的**：它只影響改寫的品質，不影響「要不要改寫」；安全性質由 A 保證。
+import services.agent_service as _ag  # noqa: E402
+
+
+def _with_condense(query, reply, error=""):
+    """把 B 的模型呼叫換成固定回應，回傳 (結果, 有沒有呼叫到)。"""
+    called = []
+    real = _ag.rag_service.condense_question
+    _ag.rag_service.condense_question = lambda q, h: (called.append(q), (reply, error))[1]
+    try:
+        return _resolve_follow_up(query, HIST), bool(called)
+    finally:
+        _ag.rag_service.condense_question = real
+
+
+# --- A：閘門本身（決定性，跑真的程式碼）---
+for _q in COMPLETE:
+    _r, _called = _with_condense(_q, "不該用到這個")
+    check(f"完整問句不被改寫：{_q}", _r == _q and not _called, f"{_r!r} called={_called}")
+
+for _q in FOLLOW_UPS:
+    _r, _called = _with_condense(_q, "料件的種類與分類有哪些")
+    check(f"追問會進入改寫：{_q}", _called and _r == "料件的種類與分類有哪些", f"{_r!r}")
 
 check("沒有前文時原樣返回", _resolve_follow_up("還有嗎", None) == "還有嗎")
 
-# 這裡曾經有一組「第 2 層」的測試，**連同被測的功能一起移除了**。
-#
-# 那一層是問模型「這句話單獨看得懂嗎」，看不懂才按前文改寫。測試把那個判斷
-# stub 成固定值，所以驗到的只是「拿到 YES/NO 之後怎麼用」，模型會不會判錯
-# 完全測不到。而它真的會判錯：實測「今天午餐吃什麼」被判成看不懂，改寫成
-# 前文的主題，於是一個合法的拒答變成一整段潤滑油規格——正是 agent_service
-# 裡早就記載過的那個回歸。
-#
-# **stub 掉不確定的部分，等於把測試的眼睛遮起來。** 現在判斷全用結構，
-# 下面那組「完整問句不被改寫」是真的跑得到的防線。
+# --- B：改寫的保底 ---
+_r, _ = _with_condense("還有嗎", "", error="模型逾時")
+check("改寫失敗退回上一句原話", _r == "料件有哪些種類", _r)
+_r, _ = _with_condense("還有嗎", "")
+check("改寫回空退回上一句原話", _r == "料件有哪些種類", _r)
+_r, _ = _with_condense("還有嗎", "還有嗎？")
+check("改寫仍是追問句就退回原話（模型有時會原句吐回）", _r == "料件有哪些種類", _r)
+
+_real_condense = _ag.rag_service.condense_question
+_ag.rag_service.condense_question = lambda q, h: ("不該用到", "")
+try:
+    check("前文只有追問時不會補成追問",
+          _resolve_follow_up("還有嗎", [{"role": "user", "content": "還有嗎"}]) == "還有嗎")
+finally:
+    _ag.rag_service.condense_question = _real_condense
+
+# --- B：一次真實模型，驗改寫確實比「用原話」多保住資訊 ---
+# 「那 DVT 呢」用原話會補成「料件有哪些種類」，DVT 這個字就丟了。
+# 這是整個改法存在的理由，所以要用真的模型跑一次。
+_real = _resolve_follow_up("那 DVT 呢", HIST)
+check("真實改寫保住追問裡的新資訊（DVT）", "DVT" in _real and _real != "那 DVT 呢", _real)
 
 
 # ------------------------------------------------- 第 3 層：0 段時由程式再查
-import services.agent_service as _ag  # noqa: E402
 #
 # 實測 4 次有 3 次，模型檢索 0 段後直接回「知識庫中查無足夠資訊」——工具回傳
 # 已經明講「請換不同的關鍵詞再查一次」、額度也還剩兩次，它一次都沒用。
@@ -756,12 +790,19 @@ check("自動補查整輪只做一次",
       _asked.count("料件有哪些種類") <= 1, str(_asked))
 check("前文只有追問時不會補成追問",
       _resolve_follow_up("還有嗎", [{"role": "user", "content": "還有嗎"}]) == "還有嗎")
-# 連續追問要一路往前找到真正有主題的那一句
+# 連續追問要一路往前找到真正有主題的那一句，找到了才交給改寫。
+# 找不到的話（前文全是追問）會原樣返回、根本不呼叫改寫——上面那項守的就是這個。
 _chain = HIST + [{"role": "user", "content": "還有嗎"},
                  {"role": "assistant", "content": "還有 03 MEMORY。"}]
-check("連續追問往前找到有主題的問題",
-      _resolve_follow_up("還有嗎", _chain) == "料件有哪些種類",
-      _resolve_follow_up("還有嗎", _chain))
+_real_condense = _ag.rag_service.condense_question
+_seen = []
+_ag.rag_service.condense_question = lambda q, h: (_seen.append(q), ("還有哪些料件種類", ""))[1]
+try:
+    _r = _resolve_follow_up("還有嗎", _chain)
+    check("連續追問往前找到有主題的問題後才改寫",
+          _seen and _r == "還有哪些料件種類", f"{_r!r} called={bool(_seen)}")
+finally:
+    _ag.rag_service.condense_question = _real_condense
 
 
 # ----------------------------------------------------------------- VLM 省略偵測

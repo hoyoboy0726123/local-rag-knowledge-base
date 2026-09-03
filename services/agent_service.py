@@ -291,35 +291,58 @@ _FOLLOW_UP = re.compile(
     # 指示代名詞開頭、以「呢／嗎」收尾——拿掉前文就完全沒有主題的句型。
     # 「那份規範的溫度上限是多少」不會中（沒有以呢／嗎收尾），
     # 「這份文件在說明什麼？」也不會，兩者本來就自帶主題。
-    r"|[那這][^，。？?！!\n]{0,8}[呢嗎]"
+    r"|[那這][^，。？?！!\n]{0,12}[呢嗎]"
     r"|(它|他|這個|那個)[^，。？?！!\n]{0,6}[呢嗎]"
     r")[？?。！!、,，\s]*$"
 )
 
 
 def _resolve_follow_up(query: str, history: list[dict] | None) -> str:
-    """把「還有嗎」這種追問補回前一個有主題的問題。
+    """把「還有嗎」「那 DVT 呢」這種追問補成可以獨立檢索的問題。
 
     **這是程式層防線，不是提示詞。** 系統指示第 1 條已經要求模型自己補主詞，
     但那條要跟另外二十幾條競爭注意力，實測 8 次有 3 次直接把「還有嗎」原封不動
     送去檢索，撈到 0 段，然後回「知識庫中查無足夠資訊」——使用者看到的是
-    知識庫沒東西，實際上只是問錯了。這跟 `_is_relevant` 要解決的是同一類問題：
-    會被忽略的規則就不該只寫在提示詞裡。
+    知識庫沒東西，實際上只是問錯了。
 
-    命中句型就補回使用者上一個實質問題的**原話**，不做任何推測性改寫。
+    **拆成兩個決定，各用適合的工具：**
 
-    **這裡曾經有第二層：問模型「這句話單獨看得懂嗎」，看不懂就交給
-    `condense_question` 改寫。已經移除。** 動機是窮舉表列不全，但實測模型會
-    誤判——「今天午餐吃什麼」被判成看不懂，於是按前文改寫，一個合法的拒答
-    變成一整段潤滑油規格。這正是這個檔案早就記載過的那個回歸，而它是隨機
-    發生的：單元測試把那個判斷 stub 掉就完全看不到。
+      A. 這句是不是追問？—— **只用句型，不問模型。**
+         曾經在這裡問模型「這句話單獨看得懂嗎」，實測它會把「今天午餐吃什麼」
+         判成看不懂，於是按前文改寫，一個合法的拒答變成一整段潤滑油規格。
+         這正是這個檔案早就記載過的那個回歸。誤判的代價（把使用者問的東西
+         換掉）遠大於漏接，所以這一步一律用結構。列不到的說法就讓它漏。
 
-    誤判的代價（把使用者問的東西換掉）遠大於漏接（模型多半自己會補），
-    所以判斷一律用結構，不用模型。列不到的說法就讓它漏——0 段時還有
-    `answer()` 裡那道「用原問題重查」的補救接住。
+      B. 確定是追問了，要補成什麼？—— **交給 `condense_question` 改寫。**
+         這一步用模型是安全的：A 已經確定這句話離開前文就沒有意義，改寫
+         不可能劫持一個完整的問題。而且它明顯比「直接用上一句原話」好：
+         「那 DVT 呢」用原話會補成「料件有哪些種類」，DVT 這個字就丟了；
+         改寫會得到「DVT 階段有哪些料件種類」。
+
+    改寫失敗、回空、或改完仍是追問句時，退回上一句原話——那是保底，
+    不是主要路徑。
     """
     if not history or not _FOLLOW_UP.match(query.strip()):
         return query
+
+    previous = ""
+    for record in reversed(history):
+        if record.get("role") != "user":
+            continue
+        candidate = (record.get("content") or "").strip()
+        # 上一句自己也是追問就再往前找，否則會補成「還有嗎 還有嗎」
+        if candidate and not _FOLLOW_UP.match(candidate):
+            previous = candidate
+            break
+    if not previous:
+        return query
+
+    rewritten, error = rag_service.condense_question(query, history)
+    rewritten = (rewritten or "").strip()
+    # 模型偶爾會把追問原句吐回來、或回一個空字串；那時保底用上一句原話
+    if error or not rewritten or _FOLLOW_UP.match(rewritten):
+        return previous
+    return rewritten
     for record in reversed(history):
         if record.get("role") != "user":
             continue
